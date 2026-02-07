@@ -3,6 +3,9 @@ import ScreenHeroCore
 
 public struct ViewerMainView: View {
     @StateObject private var viewModel = ViewerViewModel()
+    @State private var showManualConnect = false
+    @State private var manualHost = ""
+    @State private var manualPort = "5000"
 
     public init() {}
 
@@ -140,14 +143,58 @@ public struct ViewerMainView: View {
             Button(action: {
                 Task { await viewModel.connectDirect() }
             }) {
-                Label("Connect Directly", systemImage: "antenna.radiowaves.left.and.right")
+                Label("Connect to Multicast", systemImage: "antenna.radiowaves.left.and.right")
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
 
-            Text("Connects to multicast \(MulticastConfig.groupAddress):\(MulticastConfig.defaultPort)")
+            Text("Listens on \(MulticastConfig.groupAddress):\(String(MulticastConfig.defaultPort))")
                 .font(.caption)
                 .foregroundColor(.secondary)
+
+            Divider()
+                .padding(.vertical, 8)
+
+            // Manual IP:Port connection
+            Button(action: {
+                showManualConnect.toggle()
+            }) {
+                Label("Manual Connection", systemImage: "network")
+            }
+            .buttonStyle(.bordered)
+
+            if showManualConnect {
+                manualConnectSection
+            }
+        }
+    }
+
+    private var manualConnectSection: some View {
+        GroupBox("Connect to IP:Port") {
+            VStack(spacing: 12) {
+                HStack {
+                    TextField("Host IP", text: $manualHost)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 150)
+
+                    Text(":")
+
+                    TextField("Port", text: $manualPort)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 60)
+                }
+
+                Button(action: {
+                    if let port = UInt16(manualPort) {
+                        Task { await viewModel.connectToHost(host: manualHost, port: port) }
+                    }
+                }) {
+                    Label("Connect", systemImage: "arrow.right.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(manualHost.isEmpty)
+            }
+            .padding(.vertical, 8)
         }
     }
 

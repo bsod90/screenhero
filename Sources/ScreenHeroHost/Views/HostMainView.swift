@@ -49,7 +49,7 @@ public struct HostMainView: View {
                     Label("Streaming", systemImage: "antenna.radiowaves.left.and.right")
                         .foregroundColor(.green)
 
-                    Text("Multicast: \(MulticastConfig.groupAddress):\(MulticastConfig.defaultPort)")
+                    Text("Multicast: \(MulticastConfig.groupAddress):\(String(MulticastConfig.defaultPort))")
                         .font(.caption.monospaced())
                         .foregroundColor(.secondary)
                 }

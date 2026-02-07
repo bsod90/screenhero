@@ -23,6 +23,7 @@ public actor BonjourService {
 
     /// Start browsing for available hosts
     public func startBrowsing() async throws -> AsyncStream<[DiscoveredHost]> {
+        print("[Bonjour] Starting browser for \(Self.serviceType) in \(Self.serviceDomain)")
         let descriptor = NWBrowser.Descriptor.bonjour(type: Self.serviceType, domain: Self.serviceDomain)
         let params = NWParameters()
         params.includePeerToPeer = true
@@ -38,9 +39,13 @@ public actor BonjourService {
             Task {
                 switch state {
                 case .ready:
-                    break
+                    print("[Bonjour] Browser ready, searching...")
                 case .failed(let error):
-                    print("Browser failed: \(error)")
+                    print("[Bonjour] Browser failed: \(error)")
+                case .cancelled:
+                    print("[Bonjour] Browser cancelled")
+                case .waiting(let error):
+                    print("[Bonjour] Browser waiting: \(error)")
                 default:
                     break
                 }
@@ -49,6 +54,7 @@ public actor BonjourService {
 
         browser?.browseResultsChangedHandler = { [weak self] results, changes in
             guard let self = self else { return }
+            print("[Bonjour] Found \(results.count) hosts")
             Task {
                 await self.handleBrowseResults(results)
             }

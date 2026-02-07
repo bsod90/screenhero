@@ -125,6 +125,7 @@ public class ViewerViewModel: ObservableObject {
     /// Connect directly to multicast stream without host discovery
     /// Useful for testing on same machine or when host is known
     public func connectDirect(port: UInt16 = MulticastConfig.defaultPort) async {
+        print("[Viewer] Connecting to multicast \(MulticastConfig.groupAddress):\(port)...")
         do {
             let config = StreamConfig.hd1080p60
 
@@ -148,13 +149,55 @@ public class ViewerViewModel: ObservableObject {
 
             // Start receiving
             try await pipeline?.start()
+            print("[Viewer] Connected to multicast stream")
             isConnected = true
 
             // Stop searching if active
             await stopSearching()
 
         } catch {
-            errorMessage = "Failed to connect: \(error.localizedDescription)"
+            let err = "Failed to connect: \(error)"
+            print("[Viewer] ERROR: \(err)")
+            errorMessage = err
+        }
+    }
+
+    /// Connect to a specific host IP and port using unicast UDP
+    public func connectToHost(host: String, port: UInt16) async {
+        print("[Viewer] Connecting to \(host):\(port)...")
+        do {
+            let config = StreamConfig.hd1080p60
+
+            // Create unicast receiver listening on the specified port
+            let receiver = UDPReceiver(
+                port: port,
+                multicastGroup: host  // For unicast, this is the host we expect to receive from
+            )
+            let decoder = VideoToolboxDecoder()
+
+            pipeline = ReceivingPipeline(
+                receiver: receiver,
+                decoder: decoder,
+                config: config
+            )
+
+            // Set up frame handler
+            await pipeline?.setFrameHandler { [weak self] pixelBuffer in
+                await self?.handleFrame(pixelBuffer)
+            }
+
+            // Start receiving
+            try await pipeline?.start()
+            print("[Viewer] Connected to \(host):\(port)")
+            isConnected = true
+
+            // Stop searching if active
+            await stopSearching()
+
+        } catch {
+            let err = "Failed to connect to \(host):\(port): \(error)"
+            print("[Viewer] ERROR: \(err)")
+            errorMessage = err
         }
     }
 
