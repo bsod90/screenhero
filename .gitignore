@@ -1,0 +1,25 @@
+# Build artifacts
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Binaries (keep build script, ignore built binaries)
+bin/ScreenHeroHost
+bin/ScreenHeroViewer
+bin/*.zip
+
+# macOS
+.DS_Store
+*.dSYM
+
+# IDE
+*.xcodeproj
+*.xcworkspace
+.idea/
+*.swp
+*~
+
+# Package manager
+Package.resolved
