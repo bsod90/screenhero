@@ -126,7 +126,7 @@ final class DecoderTests: XCTestCase {
         try await decoder.configure(config)
     }
 
-    func testVideoToolboxDecoderRequiresFormatDescription() async throws {
+    func testVideoToolboxDecoderRequiresKeyframeFirst() async throws {
         let decoder = VideoToolboxDecoder()
         let config = StreamConfig(
             width: 640,
@@ -137,7 +137,7 @@ final class DecoderTests: XCTestCase {
 
         try await decoder.configure(config)
 
-        // Create a packet without parameter sets
+        // Create a packet without parameter sets (simulates non-keyframe or missing SPS/PPS)
         let packet = EncodedPacket(
             frameId: 0,
             data: Data([0x00, 0x00, 0x00, 0x01, 0x65]), // Fake NAL
@@ -151,12 +151,14 @@ final class DecoderTests: XCTestCase {
             parameterSets: nil
         )
 
-        // Should throw because no format description
+        // Should throw waitingForKeyframe because no valid parameter sets
         do {
             _ = try await decoder.decode(packet)
             XCTFail("Should have thrown")
+        } catch VideoDecoderError.waitingForKeyframe {
+            // Expected - decoder needs valid keyframe with SPS/PPS
         } catch VideoDecoderError.formatDescriptionMissing {
-            // Expected
+            // Also acceptable
         }
     }
 
