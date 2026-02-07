@@ -46,17 +46,26 @@ public class HostViewModel: ObservableObject {
         guard !isStreaming else { return }
 
         do {
+            print("[HostViewModel] Starting streaming on port \(port)...")
+
             // Get selected display
             let displayID: CGDirectDisplayID?
             if selectedDisplayIndex < availableDisplays.count {
                 displayID = availableDisplays[selectedDisplayIndex].displayID
+                print("[HostViewModel] Using display \(displayID!) (\(availableDisplays[selectedDisplayIndex].width)x\(availableDisplays[selectedDisplayIndex].height))")
             } else {
                 displayID = nil
+                print("[HostViewModel] Using default display")
             }
 
             // Create components
+            print("[HostViewModel] Creating screen capture source...")
             let source = ScreenCaptureKitSource(config: streamConfig, displayID: displayID)
+
+            print("[HostViewModel] Creating encoder...")
             let encoder = VideoToolboxEncoder()
+
+            print("[HostViewModel] Creating UDP sender to \(MulticastConfig.groupAddress):\(port)...")
             let sender = UDPSender(host: MulticastConfig.groupAddress, port: port)
 
             pipeline = StreamingPipeline(
@@ -67,6 +76,7 @@ public class HostViewModel: ObservableObject {
             )
 
             // Start advertising on Bonjour
+            print("[HostViewModel] Starting Bonjour advertising...")
             try await bonjourService.startAdvertising(
                 name: Host.current().localizedName ?? "ScreenHero Host",
                 port: port,
@@ -78,13 +88,18 @@ public class HostViewModel: ObservableObject {
                     "codec": streamConfig.codec.rawValue
                 ]
             )
+            print("[HostViewModel] Bonjour advertising started")
 
             // Start streaming
+            print("[HostViewModel] Starting pipeline...")
             try await pipeline?.start()
+            print("[HostViewModel] Pipeline started successfully!")
             isStreaming = true
 
         } catch {
-            errorMessage = "Failed to start streaming: \(error.localizedDescription)"
+            let errorDesc = "Failed to start streaming: \(error)"
+            print("[HostViewModel] ERROR: \(errorDesc)")
+            errorMessage = errorDesc
         }
     }
 

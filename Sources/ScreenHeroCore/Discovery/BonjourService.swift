@@ -148,22 +148,20 @@ public actor BonjourService {
 
         advertiser?.service = service
 
-        return try await withCheckedThrowingContinuation { continuation in
-            advertiser?.stateUpdateHandler = { [weak self] state in
-                guard self != nil else { return }
-
-                switch state {
-                case .ready:
-                    continuation.resume()
-                case .failed(let error):
-                    continuation.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
-                default:
-                    break
-                }
+        advertiser?.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                print("Bonjour advertising started successfully")
+            case .failed(let error):
+                print("Bonjour advertising failed: \(error)")
+            case .cancelled:
+                print("Bonjour advertising cancelled")
+            default:
+                break
             }
-
-            advertiser?.start(queue: queue)
         }
+
+        advertiser?.start(queue: queue)
     }
 
     /// Update the advertised metadata

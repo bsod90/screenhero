@@ -34,17 +34,24 @@ public actor StreamingPipeline {
         guard !isRunning else { return }
 
         // Configure encoder
+        print("[Pipeline] Configuring encoder...")
         try await encoder.configure(config)
+        print("[Pipeline] Encoder configured")
 
         // Start sender
+        print("[Pipeline] Starting sender...")
         try await sender.start()
+        print("[Pipeline] Sender started")
 
         // Start source
+        print("[Pipeline] Starting capture source...")
         try await source.start()
+        print("[Pipeline] Capture source started")
 
         isRunning = true
 
         // Start streaming task
+        print("[Pipeline] Starting streaming loop...")
         streamTask = Task { [weak self] in
             await self?.runPipeline()
         }
