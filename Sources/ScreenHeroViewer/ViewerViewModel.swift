@@ -166,7 +166,7 @@ public class ViewerViewModel: ObservableObject {
     public func connectToHost(host: String, port: UInt16) async {
         print("[Viewer] Connecting to \(host):\(port)...")
         do {
-            let config = StreamConfig.hd1080p60
+            let config = StreamConfig.screenShare
 
             // Create UDP client that connects to the host server
             let client = UDPStreamClient(serverHost: host, serverPort: port)

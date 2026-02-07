@@ -11,7 +11,7 @@ public class HostViewModel: ObservableObject {
     @Published public var connectedViewers: [UUID] = []
     @Published public var selectedDisplayIndex = 0
     @Published public var availableDisplays: [DisplayInfo] = []
-    @Published public var streamConfig: StreamConfig = .hd1080p60
+    @Published public var streamConfig: StreamConfig = .screenShare
     @Published public var errorMessage: String?
 
     private var pipeline: StreamingPipeline?

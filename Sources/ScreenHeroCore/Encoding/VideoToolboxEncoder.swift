@@ -172,9 +172,10 @@ public actor VideoToolboxEncoder: VideoEncoder {
         let currentFrameId = frameCount
         frameCount += 1
 
-        // Force keyframe for first frame
+        // Force keyframe at interval (or first frame)
         var properties: CFDictionary? = nil
-        if currentFrameId == 0 {
+        let shouldForceKeyframe = currentFrameId == 0 || (currentFrameId % UInt64(config.keyframeInterval) == 0)
+        if shouldForceKeyframe {
             properties = [
                 kVTEncodeFrameOptionKey_ForceKeyFrame: true
             ] as CFDictionary

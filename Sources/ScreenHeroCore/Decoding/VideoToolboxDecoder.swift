@@ -39,7 +39,8 @@ public actor VideoToolboxDecoder: VideoDecoder {
         }
 
         guard let formatDescription = formatDescription else {
-            throw VideoDecoderError.formatDescriptionMissing
+            // Silently skip frames until we receive a keyframe with parameter sets
+            throw VideoDecoderError.waitingForKeyframe
         }
 
         // Create session if needed

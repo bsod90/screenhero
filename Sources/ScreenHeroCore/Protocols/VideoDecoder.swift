@@ -20,4 +20,5 @@ public enum VideoDecoderError: Error, Sendable {
     case invalidData
     case sessionCreationFailed
     case formatDescriptionMissing
+    case waitingForKeyframe  // Silently skip frames until keyframe with SPS/PPS arrives
 }

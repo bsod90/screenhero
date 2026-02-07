@@ -102,8 +102,14 @@ public actor ReceivingPipeline {
                 // Call frame handler
                 await frameHandler?(pixelBuffer)
 
+            } catch VideoDecoderError.waitingForKeyframe {
+                // Silently wait for keyframe - this is expected at stream start
+                continue
             } catch {
-                print("Decode error: \(error)")
+                // Only log unexpected errors, and not too frequently
+                if framesReceived % 30 == 0 {
+                    print("Decode error: \(error)")
+                }
             }
         }
     }

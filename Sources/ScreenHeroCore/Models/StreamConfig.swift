@@ -52,16 +52,36 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         height: 1080,
         fps: 60,
         codec: .h264,
-        bitrate: 20_000_000
+        bitrate: 20_000_000,
+        keyframeInterval: 30,  // Keyframe every 0.5 seconds
+        lowLatencyMode: true
     )
 
-    /// Preset for 4K60
+    /// Preset for 4K60 (default for high quality)
     public static let uhd4k60 = StreamConfig(
         width: 3840,
         height: 2160,
         fps: 60,
         codec: .hevc,
-        bitrate: 50_000_000
+        bitrate: 80_000_000,   // 80 Mbps for high quality 4K
+        keyframeInterval: 30,  // Keyframe every 0.5 seconds
+        lowLatencyMode: true
+    )
+
+    /// Default preset - matches screen resolution
+    public static var `default`: StreamConfig {
+        uhd4k60
+    }
+
+    /// Preset for screen sharing (optimized for text clarity)
+    public static let screenShare = StreamConfig(
+        width: 3840,
+        height: 2160,
+        fps: 60,
+        codec: .hevc,
+        bitrate: 100_000_000,  // 100 Mbps for sharp text
+        keyframeInterval: 15,  // Keyframe every 0.25 seconds for quick sync
+        lowLatencyMode: true
     )
 
     /// Preset for testing (low bandwidth)
@@ -71,6 +91,7 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         fps: 30,
         codec: .h264,
         bitrate: 2_000_000,
-        keyframeInterval: 30
+        keyframeInterval: 15,
+        lowLatencyMode: true
     )
 }
