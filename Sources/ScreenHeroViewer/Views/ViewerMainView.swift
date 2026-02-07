@@ -6,6 +6,7 @@ public struct ViewerMainView: View {
     @State private var showManualConnect = false
     @State private var manualHost = ""
     @State private var manualPort = "5000"
+    @FocusState private var hostFieldFocused: Bool
 
     public init() {}
 
@@ -176,12 +177,23 @@ public struct ViewerMainView: View {
                     TextField("Host IP", text: $manualHost)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 150)
+                        .focused($hostFieldFocused)
+                        .onSubmit {
+                            if let port = UInt16(manualPort), !manualHost.isEmpty {
+                                Task { await viewModel.connectToHost(host: manualHost, port: port) }
+                            }
+                        }
 
                     Text(":")
 
                     TextField("Port", text: $manualPort)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 60)
+                        .onSubmit {
+                            if let port = UInt16(manualPort), !manualHost.isEmpty {
+                                Task { await viewModel.connectToHost(host: manualHost, port: port) }
+                            }
+                        }
                 }
 
                 Button(action: {
@@ -195,6 +207,12 @@ public struct ViewerMainView: View {
                 .disabled(manualHost.isEmpty)
             }
             .padding(.vertical, 8)
+        }
+        .onAppear {
+            // Auto-focus the host field when section appears
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                hostFieldFocused = true
+            }
         }
     }
 
