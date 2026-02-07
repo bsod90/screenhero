@@ -5,10 +5,9 @@ A low-latency screen sharing application for macOS, built with Swift and leverag
 ## Features
 
 - **Hardware-accelerated encoding/decoding** using VideoToolbox (H.264/HEVC)
-- **Low-latency streaming** via QUIC protocol
-- **Bonjour discovery** for automatic host detection on local networks
-- **Secure pairing** with PIN-based authentication
-- **Native macOS UI** built with SwiftUI
+- **Low-latency streaming** via UDP
+- **Pure CLI interface** - all parameters controllable via command line
+- **1440p @ 60fps** default (adjustable up to 4K)
 
 ## Requirements
 
@@ -23,6 +22,8 @@ A low-latency screen sharing application for macOS, built with Swift and leverag
 
 # Or build manually
 swift build -c release
+cp .build/release/ScreenHeroHost .
+cp .build/release/ScreenHeroViewer .
 ```
 
 ## Running
@@ -30,18 +31,57 @@ swift build -c release
 ### Host (share your screen)
 
 ```bash
-./bin/ScreenHeroHost
+# Default settings (1920x1080 @ 60fps, H.264, port 5000)
+./ScreenHeroHost
+
+# 1440p @ 60fps with HEVC (recommended)
+./ScreenHeroHost -w 2560 -h 1440 -b 30 -c hevc
+
+# 4K @ 60fps with HEVC
+./ScreenHeroHost -w 3840 -h 2160 -b 50 -c hevc
+
+# Show all options
+./ScreenHeroHost --help
 ```
 
 Grant Screen Recording permission when prompted (System Settings → Privacy & Security → Screen Recording).
 
+**Host options:**
+```
+-p, --port <port>       Port to listen on (default: 5000)
+-w, --width <pixels>    Stream width (default: 1920)
+-h, --height <pixels>   Stream height (default: 1080)
+-f, --fps <fps>         Frames per second (default: 60)
+-b, --bitrate <mbps>    Bitrate in Mbps (default: 20)
+-c, --codec <codec>     h264 or hevc (default: h264)
+-k, --keyframe <frames> Keyframe interval (default: 30)
+-d, --display <index>   Display index (default: 0)
+```
+
 ### Viewer (view remote screen)
 
 ```bash
-./bin/ScreenHeroViewer
+# Connect to host IP
+./ScreenHeroViewer -h 192.168.1.100
+
+# With custom port
+./ScreenHeroViewer -h 192.168.1.100 -p 5000
+
+# Fullscreen mode
+./ScreenHeroViewer -h 192.168.1.100 -f
+
+# Show all options
+./ScreenHeroViewer --help
 ```
 
-The viewer will automatically discover hosts on the local network via Bonjour.
+**Viewer options:**
+```
+-h, --host <ip>         Host IP address (required)
+-p, --port <port>       Port number (default: 5000)
+-w, --width <pixels>    Window width (default: 1920)
+-H, --height <pixels>   Window height (default: 1080)
+-f, --fullscreen        Run in fullscreen mode
+```
 
 ## Architecture
 
@@ -52,11 +92,11 @@ ScreenHero/
 │   │   ├── Capture/        # Screen capture (ScreenCaptureKit)
 │   │   ├── Encoding/       # Video encoding (VideoToolbox)
 │   │   ├── Decoding/       # Video decoding (VideoToolbox)
-│   │   ├── Transport/      # QUIC networking
+│   │   ├── Network/        # UDP streaming
 │   │   ├── Discovery/      # Bonjour service discovery
 │   │   └── Auth/           # Pairing and authentication
-│   ├── ScreenHeroHost/     # Host application
-│   └── ScreenHeroViewer/   # Viewer application
+│   ├── ScreenHeroHost/     # Host CLI application
+│   └── ScreenHeroViewer/   # Viewer CLI application
 └── Tests/
 ```
 
@@ -69,7 +109,7 @@ The built binaries are not code-signed. On first run, macOS Gatekeeper may block
 
 Or remove the quarantine attribute:
 ```bash
-xattr -cr ./bin/ScreenHeroHost ./bin/ScreenHeroViewer
+xattr -cr ./ScreenHeroHost ./ScreenHeroViewer
 ```
 
 ## License
