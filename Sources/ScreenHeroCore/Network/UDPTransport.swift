@@ -341,21 +341,21 @@ public actor UDPTransport {
     }
 }
 
-// MARK: - Server-style UDP Sender (learns client IPs dynamically)
+// MARK: - Server-style UDP Sender (uses incoming connections for replies)
 
-/// Subscriber info with outgoing connection
+/// Subscriber info - uses the same connection that sent SUBSCRIBE
 private struct Subscriber {
-    let ip: String
-    let port: UInt16
+    let id: String
     let connection: NWConnection
     var lastSeen: Date
 }
 
 /// UDP Server that listens for subscribers and streams to them
+/// Uses the same connection for bidirectional communication (more firewall-friendly)
 public actor UDPStreamServer: NetworkSender {
     private let port: UInt16
     private var listener: NWListener?
-    private var subscribers: [String: Subscriber] = [:]  // "IP:port" -> Subscriber
+    private var subscribers: [String: Subscriber] = [:]
     private let queue = DispatchQueue(label: "com.screenhero.udpserver")
     private let packetProtocol: PacketProtocol
 
@@ -412,10 +412,27 @@ public actor UDPStreamServer: NetworkSender {
             guard let self = self else { return }
             switch state {
             case .ready:
-                // Listen for messages
+                // Extract subscriber ID from endpoint
+                if let endpoint = connection.currentPath?.remoteEndpoint,
+                   case .hostPort(let host, let port) = endpoint {
+                    let id = "\(host):\(port)"
+                    print("[UDPServer] Connection ready from \(id)")
+                    Task {
+                        await self.addSubscriber(id: id, connection: connection)
+                    }
+                }
+                // Start listening for messages on this connection
                 self.receiveOnConnection(connection)
-            case .failed, .cancelled:
-                break
+            case .failed(let error):
+                print("[UDPServer] Connection failed: \(error)")
+            case .cancelled:
+                if let endpoint = connection.currentPath?.remoteEndpoint,
+                   case .hostPort(let host, let port) = endpoint {
+                    let id = "\(host):\(port)"
+                    Task {
+                        await self.removeSubscriber(id: id)
+                    }
+                }
             default:
                 break
             }
@@ -429,19 +446,12 @@ public actor UDPStreamServer: NetworkSender {
 
             if let data = content, let message = String(data: data, encoding: .utf8) {
                 if message.hasPrefix("SUBSCRIBE") {
-                    // Extract client's listening port from message: "SUBSCRIBE:port"
-                    var clientPort: UInt16 = 5001  // default
-                    if message.contains(":"), let portStr = message.split(separator: ":").last,
-                       let port = UInt16(portStr) {
-                        clientPort = port
-                    }
-
                     if let endpoint = connection.currentPath?.remoteEndpoint,
-                       case .hostPort(let host, _) = endpoint {
-                        let ip = host.debugDescription
-                        print("[UDPServer] Subscribe from \(ip), will send to port \(clientPort)")
+                       case .hostPort(let host, let port) = endpoint {
+                        let id = "\(host):\(port)"
+                        print("[UDPServer] SUBSCRIBE from \(id)")
                         Task {
-                            await self.addSubscriber(ip: ip, sendPort: clientPort)
+                            await self.updateSubscriberLastSeen(id: id)
                         }
                     }
                 }
@@ -453,36 +463,20 @@ public actor UDPStreamServer: NetworkSender {
         }
     }
 
-    private func addSubscriber(ip: String, sendPort: UInt16) {
-        let key = "\(ip):\(sendPort)"
+    private func addSubscriber(id: String, connection: NWConnection) {
+        if subscribers[id] == nil {
+            subscribers[id] = Subscriber(id: id, connection: connection, lastSeen: Date())
+            print("[UDPServer] New subscriber: \(id) (total: \(subscribers.count))")
+        }
+    }
 
-        if subscribers[key] == nil {
-            print("[UDPServer] Creating outgoing connection to \(ip):\(sendPort)")
+    private func updateSubscriberLastSeen(id: String) {
+        subscribers[id]?.lastSeen = Date()
+    }
 
-            // Create dedicated outgoing connection to client
-            let host = NWEndpoint.Host(ip)
-            guard let port = NWEndpoint.Port(rawValue: sendPort) else { return }
-
-            let params = NWParameters.udp
-            let conn = NWConnection(host: host, port: port, using: params)
-
-            conn.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    print("[UDPServer] Outgoing connection to \(ip):\(sendPort) ready")
-                case .failed(let error):
-                    print("[UDPServer] Outgoing connection to \(ip):\(sendPort) failed: \(error)")
-                default:
-                    break
-                }
-            }
-            conn.start(queue: queue)
-
-            subscribers[key] = Subscriber(ip: ip, port: sendPort, connection: conn, lastSeen: Date())
-            print("[UDPServer] New subscriber: \(key) (total: \(subscribers.count))")
-        } else {
-            // Update last seen
-            subscribers[key]?.lastSeen = Date()
+    private func removeSubscriber(id: String) {
+        if subscribers.removeValue(forKey: id) != nil {
+            print("[UDPServer] Subscriber disconnected: \(id)")
         }
     }
 
@@ -515,18 +509,21 @@ public actor UDPStreamServer: NetworkSender {
         }
 
         guard !subscribers.isEmpty else {
-            // No subscribers yet, just skip
             return
         }
 
         let fragments = packetProtocol.fragment(packet: packet)
 
-        for (_, subscriber) in subscribers {
+        if packet.frameId == 0 {
+            print("[UDPServer] Sending first frame to \(subscribers.count) subscriber(s), \(fragments.count) fragments")
+        }
+
+        for (key, subscriber) in subscribers {
             for fragment in fragments {
                 let data = fragment.serialize()
                 subscriber.connection.send(content: data, completion: .contentProcessed { error in
                     if let error = error {
-                        print("[UDPServer] Send error to \(subscriber.ip): \(error)")
+                        print("[UDPServer] Send error to \(key): \(error)")
                     }
                 })
             }
@@ -541,12 +538,11 @@ public actor UDPStreamServer: NetworkSender {
 // MARK: - Client-style UDP Receiver (connects to server)
 
 /// UDP Client that subscribes to a server and receives stream
+/// Uses same connection for subscribe and receive (bidirectional)
 public actor UDPStreamClient: NetworkReceiver {
     private let serverHost: String
     private let serverPort: UInt16
-    private let listenPort: UInt16
-    private var subscribeConnection: NWConnection?
-    private var listener: NWListener?
+    private var connection: NWConnection?
     private let queue = DispatchQueue(label: "com.screenhero.udpclient")
     private let packetProtocol: PacketProtocol
     private var continuation: AsyncStream<EncodedPacket>.Continuation?
@@ -568,29 +564,26 @@ public actor UDPStreamClient: NetworkReceiver {
     public init(serverHost: String, serverPort: UInt16, listenPort: UInt16 = 5001, maxPacketSize: Int = 1400) {
         self.serverHost = serverHost
         self.serverPort = serverPort
-        self.listenPort = listenPort
+        // listenPort is now ignored - we receive on the same connection
         self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
     }
 
     public func start() async throws {
-        print("[UDPClient] Connecting to \(serverHost):\(serverPort), listening on \(listenPort)...")
+        print("[UDPClient] Connecting to \(serverHost):\(serverPort)...")
 
         _ = _packets
 
-        // Start listener first to receive data from server
-        try await startListener()
-
-        // Create connection to send SUBSCRIBE to server
         let host = NWEndpoint.Host(serverHost)
         guard let port = NWEndpoint.Port(rawValue: serverPort) else {
             throw NetworkTransportError.invalidAddress
         }
 
         let params = NWParameters.udp
-        subscribeConnection = NWConnection(host: host, port: port, using: params)
+        params.allowLocalEndpointReuse = true
+        connection = NWConnection(host: host, port: port, using: params)
 
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            subscribeConnection?.stateUpdateHandler = { [weak self] state in
+            connection?.stateUpdateHandler = { [weak self] state in
                 guard let self = self else { return }
                 Task {
                     switch state {
@@ -598,6 +591,7 @@ public actor UDPStreamClient: NetworkReceiver {
                         print("[UDPClient] Connected to \(self.serverHost):\(self.serverPort)")
                         await self.setActive(true)
                         await self.startSubscribing()
+                        await self.startReceiving()
                         cont.resume()
                     case .failed(let error):
                         print("[UDPClient] Connection failed: \(error)")
@@ -611,54 +605,8 @@ public actor UDPStreamClient: NetworkReceiver {
                 }
             }
 
-            subscribeConnection?.start(queue: queue)
+            connection?.start(queue: queue)
         }
-    }
-
-    private func startListener() async throws {
-        let params = NWParameters.udp
-        params.allowLocalEndpointReuse = true
-
-        guard let nwPort = NWEndpoint.Port(rawValue: listenPort) else {
-            throw NetworkTransportError.invalidAddress
-        }
-
-        listener = try NWListener(using: params, on: nwPort)
-
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            listener?.stateUpdateHandler = { [weak self] state in
-                guard let self = self else { return }
-                Task {
-                    switch state {
-                    case .ready:
-                        print("[UDPClient] Listener ready on port \(self.listenPort)")
-                        cont.resume()
-                    case .failed(let error):
-                        print("[UDPClient] Listener failed: \(error)")
-                        cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
-                    case .cancelled:
-                        break
-                    default:
-                        break
-                    }
-                }
-            }
-
-            listener?.newConnectionHandler = { [weak self] connection in
-                self?.handleIncomingConnection(connection)
-            }
-
-            listener?.start(queue: queue)
-        }
-    }
-
-    private nonisolated func handleIncomingConnection(_ connection: NWConnection) {
-        connection.stateUpdateHandler = { [weak self] state in
-            if case .ready = state {
-                self?.receiveOnConnection(connection)
-            }
-        }
-        connection.start(queue: queue)
     }
 
     private func setActive(_ active: Bool) {
@@ -666,7 +614,6 @@ public actor UDPStreamClient: NetworkReceiver {
     }
 
     private func startSubscribing() {
-        // Send SUBSCRIBE message with our listen port
         sendSubscribeMessage()
 
         subscribeTimer = DispatchSource.makeTimerSource(queue: queue)
@@ -678,18 +625,27 @@ public actor UDPStreamClient: NetworkReceiver {
     }
 
     private func sendSubscribeMessage() {
-        // Include our listening port in the subscribe message
-        guard let data = "SUBSCRIBE:\(listenPort)".data(using: .utf8) else { return }
-        subscribeConnection?.send(content: data, completion: .contentProcessed { error in
+        guard let data = "SUBSCRIBE".data(using: .utf8) else { return }
+        connection?.send(content: data, completion: .contentProcessed { error in
             if let error = error {
                 print("[UDPClient] Subscribe send error: \(error)")
             }
         })
     }
 
-    private nonisolated func receiveOnConnection(_ connection: NWConnection) {
+    private func startReceiving() {
+        guard let conn = connection else { return }
+        receiveLoop(on: conn)
+    }
+
+    private nonisolated func receiveLoop(on connection: NWConnection) {
         connection.receiveMessage { [weak self] content, _, _, error in
             guard let self = self else { return }
+
+            if let error = error {
+                print("[UDPClient] Receive error: \(error)")
+                return
+            }
 
             if let data = content {
                 Task {
@@ -697,28 +653,50 @@ public actor UDPStreamClient: NetworkReceiver {
                 }
             }
 
-            if error == nil {
-                self.receiveOnConnection(connection)
-            }
+            // Continue receiving
+            self.receiveLoop(on: connection)
         }
     }
 
+    private var receivedPacketCount: UInt64 = 0
+    private var reassembledFrameCount: UInt64 = 0
+
     private func processReceivedData(_ data: Data) async {
+        receivedPacketCount += 1
+
+        if receivedPacketCount <= 5 {
+            print("[UDPClient] Received packet #\(receivedPacketCount), size: \(data.count) bytes")
+        }
+
         guard let fragment = NetworkPacket.deserialize(from: data) else {
+            print("[UDPClient] Failed to deserialize packet #\(receivedPacketCount)")
             return
         }
 
         let frameId = fragment.frameId
+
+        if receivedPacketCount <= 5 {
+            print("[UDPClient] Frame \(frameId), fragment \(fragment.fragmentIndex)/\(fragment.totalFragments)")
+        }
 
         if pendingFragments[frameId] == nil {
             pendingFragments[frameId] = []
         }
         pendingFragments[frameId]?.append(fragment)
 
-        if let fragments = pendingFragments[frameId],
-           fragments.count == Int(fragment.totalFragments) {
-            if let packet = packetProtocol.reassemble(fragments: fragments) {
+        let currentCount = pendingFragments[frameId]?.count ?? 0
+        let totalNeeded = Int(fragment.totalFragments)
+
+        if currentCount == totalNeeded {
+            if let fragments = pendingFragments[frameId],
+               let packet = packetProtocol.reassemble(fragments: fragments) {
+                reassembledFrameCount += 1
+                if reassembledFrameCount <= 3 {
+                    print("[UDPClient] Frame \(frameId) reassembled (\(reassembledFrameCount)), size: \(packet.data.count) bytes")
+                }
                 continuation?.yield(packet)
+            } else {
+                print("[UDPClient] Failed to reassemble frame \(frameId)")
             }
             pendingFragments.removeValue(forKey: frameId)
         }
@@ -735,10 +713,8 @@ public actor UDPStreamClient: NetworkReceiver {
     public func stop() async {
         subscribeTimer?.cancel()
         subscribeTimer = nil
-        subscribeConnection?.cancel()
-        subscribeConnection = nil
-        listener?.cancel()
-        listener = nil
+        connection?.cancel()
+        connection = nil
         isActive = false
         continuation?.finish()
     }

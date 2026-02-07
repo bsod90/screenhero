@@ -6,7 +6,8 @@ public struct PacketProtocol: Sendable {
     public let maxPacketSize: Int
 
     /// Header size in bytes
-    public static let headerSize = 32
+    /// Magic(4) + FrameId(8) + FragmentInfo(4) + Flags(1) + Dimensions(4) + PTS(8) + ParamSetsLen(2) + PayloadLen(2) = 33
+    public static let headerSize = 33
 
     public init(maxPacketSize: Int = 1400) {
         self.maxPacketSize = maxPacketSize

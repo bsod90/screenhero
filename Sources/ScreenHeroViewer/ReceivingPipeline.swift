@@ -69,7 +69,13 @@ public actor ReceivingPipeline {
 
         print("[Pipeline] Starting packet processing loop")
 
+        var packetsFromStream: UInt64 = 0
         for await packet in packetsStream {
+            packetsFromStream += 1
+            if packetsFromStream <= 3 {
+                print("[Pipeline] Got packet \(packetsFromStream) from stream: frame \(packet.frameId), size \(packet.data.count), keyframe: \(packet.isKeyframe)")
+            }
+
             guard isRunning else { break }
 
             // Decode immediately - no jitter buffer for lowest latency
