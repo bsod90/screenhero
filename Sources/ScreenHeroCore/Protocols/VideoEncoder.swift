@@ -23,4 +23,5 @@ public enum VideoEncoderError: Error, Sendable {
     case invalidInput
     case sessionCreationFailed
     case unsupportedCodec
+    case noImageBuffer  // Sample buffer has no image data (skip silently)
 }

@@ -162,8 +162,17 @@ public actor VideoToolboxEncoder: VideoEncoder {
             throw VideoEncoderError.notConfigured
         }
 
+        // ScreenCaptureKit can emit sample buffers without image data (status frames)
+        // Skip these silently
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            throw VideoEncoderError.invalidInput
+            throw VideoEncoderError.noImageBuffer
+        }
+
+        // Validate pixel buffer dimensions
+        let pbWidth = CVPixelBufferGetWidth(imageBuffer)
+        let pbHeight = CVPixelBufferGetHeight(imageBuffer)
+        if pbWidth == 0 || pbHeight == 0 {
+            throw VideoEncoderError.noImageBuffer
         }
 
         let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)

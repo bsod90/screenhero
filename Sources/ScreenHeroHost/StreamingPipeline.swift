@@ -76,12 +76,18 @@ public actor StreamingPipeline {
                 bytesSent += UInt64(packet.data.count)
                 lastFrameTime = DispatchTime.now().uptimeNanoseconds
 
-                // Log every 30 frames
-                if framesSent % 30 == 0 {
+                // Log every 60 frames (once per second at 60fps)
+                if framesSent % 60 == 0 {
                     print("[Pipeline] Sent \(framesSent) frames, \(String(format: "%.2f", Double(bytesSent) / 1_000_000)) MB")
                 }
+            } catch VideoEncoderError.noImageBuffer {
+                // Skip sample buffers without image data (status frames from ScreenCaptureKit)
+                continue
             } catch {
-                print("[Pipeline] Error: \(error)")
+                // Only log other errors occasionally to avoid spam
+                if framesSent % 30 == 0 {
+                    print("[Pipeline] Error: \(error)")
+                }
             }
         }
         print("[Pipeline] Frame loop ended")
