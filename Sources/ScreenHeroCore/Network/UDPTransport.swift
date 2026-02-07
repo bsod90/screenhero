@@ -340,3 +340,324 @@ public actor UDPTransport {
         await receiver.getPackets()
     }
 }
+
+// MARK: - Server-style UDP Sender (learns client IPs dynamically)
+
+/// UDP Server that listens for subscribers and streams to them
+public actor UDPStreamServer: NetworkSender {
+    private let port: UInt16
+    private var listener: NWListener?
+    private var subscribers: [String: NWConnection] = [:]  // IP -> Connection
+    private let queue = DispatchQueue(label: "com.screenhero.udpserver")
+    private let packetProtocol: PacketProtocol
+    private var subscriptionContinuation: AsyncStream<String>.Continuation?
+
+    public private(set) var isActive = false
+
+    public init(port: UInt16, maxPacketSize: Int = 1400) {
+        self.port = port
+        self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
+    }
+
+    public func start() async throws {
+        print("[UDPServer] Starting on port \(port)...")
+
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            throw NetworkTransportError.invalidAddress
+        }
+
+        listener = try NWListener(using: params, on: nwPort)
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            listener?.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
+                Task {
+                    switch state {
+                    case .ready:
+                        print("[UDPServer] Listening on port \(self.port)")
+                        await self.setActive(true)
+                        cont.resume()
+                    case .failed(let error):
+                        print("[UDPServer] Failed: \(error)")
+                        await self.setActive(false)
+                        cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
+                    case .cancelled:
+                        await self.setActive(false)
+                    default:
+                        break
+                    }
+                }
+            }
+
+            listener?.newConnectionHandler = { [weak self] connection in
+                self?.handleNewConnection(connection)
+            }
+
+            listener?.start(queue: queue)
+        }
+    }
+
+    private nonisolated func handleNewConnection(_ connection: NWConnection) {
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            switch state {
+            case .ready:
+                // Get remote endpoint
+                if let endpoint = connection.currentPath?.remoteEndpoint,
+                   case .hostPort(let host, _) = endpoint {
+                    let ip = host.debugDescription
+                    Task {
+                        await self.addSubscriber(ip: ip, connection: connection)
+                    }
+                }
+                // Listen for messages (subscribe packets)
+                self.receiveOnConnection(connection)
+            case .failed, .cancelled:
+                if let endpoint = connection.currentPath?.remoteEndpoint,
+                   case .hostPort(let host, _) = endpoint {
+                    Task {
+                        await self.removeSubscriber(ip: host.debugDescription)
+                    }
+                }
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    private nonisolated func receiveOnConnection(_ connection: NWConnection) {
+        connection.receiveMessage { [weak self] content, _, _, error in
+            guard let self = self else { return }
+
+            if let data = content, let message = String(data: data, encoding: .utf8) {
+                if message == "SUBSCRIBE" {
+                    if let endpoint = connection.currentPath?.remoteEndpoint,
+                       case .hostPort(let host, let port) = endpoint {
+                        print("[UDPServer] Subscribe from \(host.debugDescription):\(port)")
+                        Task {
+                            await self.addSubscriber(ip: host.debugDescription, connection: connection)
+                        }
+                    }
+                }
+            }
+
+            if error == nil {
+                self.receiveOnConnection(connection)
+            }
+        }
+    }
+
+    private func addSubscriber(ip: String, connection: NWConnection) {
+        if subscribers[ip] == nil {
+            print("[UDPServer] New subscriber: \(ip)")
+            subscribers[ip] = connection
+        }
+    }
+
+    private func removeSubscriber(ip: String) {
+        if subscribers.removeValue(forKey: ip) != nil {
+            print("[UDPServer] Subscriber disconnected: \(ip)")
+        }
+    }
+
+    private func setActive(_ active: Bool) {
+        isActive = active
+    }
+
+    public func stop() async {
+        listener?.cancel()
+        listener = nil
+        for (_, conn) in subscribers {
+            conn.cancel()
+        }
+        subscribers.removeAll()
+        isActive = false
+    }
+
+    public func send(_ packet: EncodedPacket) async throws {
+        guard isActive else {
+            throw NetworkTransportError.notConnected
+        }
+
+        let fragments = packetProtocol.fragment(packet: packet)
+
+        for (_, connection) in subscribers {
+            for fragment in fragments {
+                let data = fragment.serialize()
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error = error {
+                        print("[UDPServer] Send error: \(error)")
+                    }
+                })
+            }
+        }
+    }
+
+    public var subscriberCount: Int {
+        subscribers.count
+    }
+}
+
+// MARK: - Client-style UDP Receiver (connects to server)
+
+/// UDP Client that subscribes to a server and receives stream
+public actor UDPStreamClient: NetworkReceiver {
+    private let serverHost: String
+    private let serverPort: UInt16
+    private var connection: NWConnection?
+    private let queue = DispatchQueue(label: "com.screenhero.udpclient")
+    private let packetProtocol: PacketProtocol
+    private var continuation: AsyncStream<EncodedPacket>.Continuation?
+    private var pendingFragments: [UInt64: [NetworkPacket]] = [:]
+    private var subscribeTimer: DispatchSourceTimer?
+
+    public private(set) var isActive = false
+
+    private lazy var _packets: AsyncStream<EncodedPacket> = {
+        AsyncStream { continuation in
+            self.continuation = continuation
+        }
+    }()
+
+    public nonisolated var packets: AsyncStream<EncodedPacket> {
+        AsyncStream { _ in }
+    }
+
+    public init(serverHost: String, serverPort: UInt16, maxPacketSize: Int = 1400) {
+        self.serverHost = serverHost
+        self.serverPort = serverPort
+        self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
+    }
+
+    public func start() async throws {
+        print("[UDPClient] Connecting to \(serverHost):\(serverPort)...")
+
+        _ = _packets
+
+        let host = NWEndpoint.Host(serverHost)
+        guard let port = NWEndpoint.Port(rawValue: serverPort) else {
+            throw NetworkTransportError.invalidAddress
+        }
+
+        let params = NWParameters.udp
+        connection = NWConnection(host: host, port: port, using: params)
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            connection?.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
+                Task {
+                    switch state {
+                    case .ready:
+                        print("[UDPClient] Connected to \(self.serverHost):\(self.serverPort)")
+                        await self.setActive(true)
+                        await self.startSubscribing()
+                        await self.startReceiving()
+                        cont.resume()
+                    case .failed(let error):
+                        print("[UDPClient] Connection failed: \(error)")
+                        await self.setActive(false)
+                        cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
+                    case .cancelled:
+                        await self.setActive(false)
+                    default:
+                        break
+                    }
+                }
+            }
+
+            connection?.start(queue: queue)
+        }
+    }
+
+    private func setActive(_ active: Bool) {
+        isActive = active
+    }
+
+    private func startSubscribing() {
+        // Send SUBSCRIBE message periodically
+        sendSubscribeMessage()
+
+        subscribeTimer = DispatchSource.makeTimerSource(queue: queue)
+        subscribeTimer?.schedule(deadline: .now() + 1, repeating: 2.0)
+        subscribeTimer?.setEventHandler { [weak self] in
+            Task { await self?.sendSubscribeMessage() }
+        }
+        subscribeTimer?.resume()
+    }
+
+    private func sendSubscribeMessage() {
+        guard let data = "SUBSCRIBE".data(using: .utf8) else { return }
+        connection?.send(content: data, completion: .contentProcessed { error in
+            if let error = error {
+                print("[UDPClient] Subscribe send error: \(error)")
+            }
+        })
+    }
+
+    private func startReceiving() {
+        guard let conn = connection else { return }
+        receiveNext(on: conn)
+    }
+
+    private nonisolated func receiveNext(on connection: NWConnection) {
+        connection.receiveMessage { [weak self] content, _, _, error in
+            guard let self = self else { return }
+
+            if let data = content {
+                Task {
+                    await self.processReceivedData(data)
+                }
+            }
+
+            if error == nil {
+                self.receiveNext(on: connection)
+            }
+        }
+    }
+
+    private func processReceivedData(_ data: Data) async {
+        guard let fragment = NetworkPacket.deserialize(from: data) else {
+            return
+        }
+
+        let frameId = fragment.frameId
+
+        if pendingFragments[frameId] == nil {
+            pendingFragments[frameId] = []
+        }
+        pendingFragments[frameId]?.append(fragment)
+
+        if let fragments = pendingFragments[frameId],
+           fragments.count == Int(fragment.totalFragments) {
+            if let packet = packetProtocol.reassemble(fragments: fragments) {
+                continuation?.yield(packet)
+            }
+            pendingFragments.removeValue(forKey: frameId)
+        }
+
+        // Cleanup old fragments
+        if pendingFragments.count > 100 {
+            let sortedKeys = pendingFragments.keys.sorted()
+            for key in sortedKeys.prefix(pendingFragments.count - 100) {
+                pendingFragments.removeValue(forKey: key)
+            }
+        }
+    }
+
+    public func stop() async {
+        subscribeTimer?.cancel()
+        subscribeTimer = nil
+        connection?.cancel()
+        connection = nil
+        isActive = false
+        continuation?.finish()
+    }
+
+    public func getPackets() -> AsyncStream<EncodedPacket> {
+        _packets
+    }
+}

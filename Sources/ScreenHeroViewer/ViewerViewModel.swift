@@ -164,17 +164,16 @@ public class ViewerViewModel: ObservableObject {
 
     /// Connect to a specific host IP and port using unicast UDP
     public func connectToHost(host: String, port: UInt16) async {
-        print("[Viewer] Connecting to \(host):\(port) (unicast mode)...")
+        print("[Viewer] Connecting to \(host):\(port)...")
         do {
             let config = StreamConfig.hd1080p60
 
-            // Create unicast receiver - listens on port for packets from any sender
-            // Note: The host IP is informational - we listen on the port and receive from anyone
-            let receiver = UDPReceiver(port: port)  // Unicast mode - no multicast group
+            // Create UDP client that connects to the host server
+            let client = UDPStreamClient(serverHost: host, serverPort: port)
             let decoder = VideoToolboxDecoder()
 
             pipeline = ReceivingPipeline(
-                receiver: receiver,
+                receiver: client,
                 decoder: decoder,
                 config: config
             )
@@ -186,7 +185,7 @@ public class ViewerViewModel: ObservableObject {
 
             // Start receiving
             try await pipeline?.start()
-            print("[Viewer] Listening on port \(port) for packets from \(host)")
+            print("[Viewer] Connected to \(host):\(port)")
             isConnected = true
 
             // Stop searching if active

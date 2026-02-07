@@ -5,7 +5,6 @@ import AppKit
 /// Parsed command line arguments for Host
 @available(macOS 13.0, *)
 struct HostCLIArgs {
-    var targetHost: String?
     var port: UInt16 = 5000
     var autoStart: Bool = false
 
@@ -17,11 +16,6 @@ struct HostCLIArgs {
         while i < arguments.count {
             let arg = arguments[i]
             switch arg {
-            case "-t", "--target":
-                if i + 1 < arguments.count {
-                    args.targetHost = arguments[i + 1]
-                    i += 1
-                }
             case "-p", "--port":
                 if i + 1 < arguments.count, let port = UInt16(arguments[i + 1]) {
                     args.port = port
@@ -36,16 +30,13 @@ struct HostCLIArgs {
                 Usage: ScreenHeroHost [options]
 
                 Options:
-                  -t, --target <ip>   Send directly to viewer IP (unicast)
-                  -p, --port <port>   Port number (default: 5000)
+                  -p, --port <port>   Port to listen on (default: 5000)
                   -s, --start         Auto-start streaming
                   --help              Show this help
 
                 Examples:
-                  ScreenHeroHost -t 192.168.1.50 -p 5000 -s
-                  ScreenHeroHost --target 10.0.0.5 --start
-
-                Without -t, streams to multicast group \(MulticastConfig.groupAddress)
+                  ScreenHeroHost -p 5000 -s
+                  ScreenHeroHost --start
                 """)
                 exit(0)
             default:
@@ -54,12 +45,7 @@ struct HostCLIArgs {
             i += 1
         }
 
-        if let target = args.targetHost {
-            print("[Host] Target: \(target):\(args.port) (unicast)")
-        } else {
-            print("[Host] Target: \(MulticastConfig.groupAddress):\(args.port) (multicast)")
-        }
-
+        print("[Host] Listening on port \(args.port)")
         return args
     }
 }
@@ -83,8 +69,7 @@ struct HostApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HostMainView(targetHost: Self.cliArgs.targetHost,
-                        port: Self.cliArgs.port,
+            HostMainView(port: Self.cliArgs.port,
                         autoStart: Self.cliArgs.autoStart)
                 .onAppear {
                     NSApp.activate(ignoringOtherApps: true)

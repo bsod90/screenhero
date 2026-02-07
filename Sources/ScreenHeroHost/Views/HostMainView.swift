@@ -7,8 +7,8 @@ public struct HostMainView: View {
 
     private let autoStart: Bool
 
-    public init(targetHost: String? = nil, port: UInt16 = 5000, autoStart: Bool = false) {
-        self._viewModel = StateObject(wrappedValue: HostViewModel(targetHost: targetHost, port: port))
+    public init(port: UInt16 = 5000, autoStart: Bool = false) {
+        self._viewModel = StateObject(wrappedValue: HostViewModel(port: port))
         self.autoStart = autoStart
     }
 
