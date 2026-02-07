@@ -90,10 +90,10 @@ public actor UDPSender: NetworkSender {
     }
 }
 
-/// UDP-based network receiver using Network.framework (multicast)
+/// UDP-based network receiver using Network.framework (multicast or unicast)
 public actor UDPReceiver: NetworkReceiver {
     private let port: UInt16
-    private let multicastGroup: String
+    private let multicastGroup: String?
     private var connectionGroup: NWConnectionGroup?
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "com.screenhero.udpreceiver")
@@ -114,9 +114,17 @@ public actor UDPReceiver: NetworkReceiver {
         AsyncStream { _ in }
     }
 
+    /// Initialize for multicast reception
     public init(port: UInt16 = MulticastConfig.defaultPort, multicastGroup: String = MulticastConfig.groupAddress, maxPacketSize: Int = 1400) {
         self.port = port
         self.multicastGroup = multicastGroup
+        self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
+    }
+
+    /// Initialize for unicast reception (listen on port, receive from any sender)
+    public init(port: UInt16, maxPacketSize: Int = 1400) {
+        self.port = port
+        self.multicastGroup = nil
         self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
     }
 
@@ -124,9 +132,18 @@ public actor UDPReceiver: NetworkReceiver {
         // Initialize packets stream
         _ = _packets
 
-        // Create multicast group descriptor
+        if let multicastGroup = multicastGroup {
+            try await startMulticast(group: multicastGroup)
+        } else {
+            try await startUnicast()
+        }
+    }
+
+    private func startMulticast(group: String) async throws {
+        print("[UDPReceiver] Starting multicast receiver on \(group):\(port)")
+
         let multicastGroupEndpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(multicastGroup),
+            host: NWEndpoint.Host(group),
             port: NWEndpoint.Port(rawValue: port)!
         )
 
@@ -143,9 +160,11 @@ public actor UDPReceiver: NetworkReceiver {
                 Task {
                     switch state {
                     case .ready:
+                        print("[UDPReceiver] Multicast receiver ready")
                         await self.setActive(true)
                         cont.resume()
                     case .failed(let error):
+                        print("[UDPReceiver] Multicast receiver failed: \(error)")
                         await self.setActive(false)
                         cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
                     case .cancelled:
@@ -164,6 +183,70 @@ public actor UDPReceiver: NetworkReceiver {
             }
 
             connectionGroup?.start(queue: queue)
+        }
+    }
+
+    private func startUnicast() async throws {
+        print("[UDPReceiver] Starting unicast receiver on port \(port)")
+
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            throw NetworkTransportError.invalidAddress
+        }
+
+        listener = try NWListener(using: params, on: nwPort)
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            listener?.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
+
+                Task {
+                    switch state {
+                    case .ready:
+                        print("[UDPReceiver] Unicast listener ready on port \(self.port)")
+                        await self.setActive(true)
+                        cont.resume()
+                    case .failed(let error):
+                        print("[UDPReceiver] Unicast listener failed: \(error)")
+                        await self.setActive(false)
+                        cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
+                    case .cancelled:
+                        await self.setActive(false)
+                    default:
+                        break
+                    }
+                }
+            }
+
+            listener?.newConnectionHandler = { [weak self] connection in
+                guard let self = self else { return }
+                connection.stateUpdateHandler = { state in
+                    if case .ready = state {
+                        self.receiveOnConnection(connection)
+                    }
+                }
+                connection.start(queue: self.queue)
+            }
+
+            listener?.start(queue: queue)
+        }
+    }
+
+    private nonisolated func receiveOnConnection(_ connection: NWConnection) {
+        connection.receiveMessage { [weak self] content, _, isComplete, error in
+            guard let self = self else { return }
+
+            if let data = content {
+                Task {
+                    await self.processReceivedData(data)
+                }
+            }
+
+            if error == nil {
+                self.receiveOnConnection(connection)
+            }
         }
     }
 
