@@ -31,28 +31,25 @@ public actor UDPSender: NetworkSender {
 
         connection = NWConnection(host: host, port: port, using: params)
 
-        return try await withCheckedThrowingContinuation { continuation in
-            connection?.stateUpdateHandler = { [weak self] state in
-                guard let self = self else { return }
-
-                Task {
-                    switch state {
-                    case .ready:
-                        await self.setActive(true)
-                        continuation.resume()
-                    case .failed(let error):
-                        await self.setActive(false)
-                        continuation.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
-                    case .cancelled:
-                        await self.setActive(false)
-                    default:
-                        break
-                    }
+        connection?.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            Task {
+                switch state {
+                case .ready:
+                    await self.setActive(true)
+                case .failed, .cancelled:
+                    await self.setActive(false)
+                default:
+                    break
                 }
             }
-
-            connection?.start(queue: queue)
         }
+
+        connection?.start(queue: queue)
+
+        // UDP is connectionless - we don't need to wait for "ready" state
+        // Just mark as active and let sends happen (they'll fail individually if there's an issue)
+        isActive = true
     }
 
     private func setActive(_ active: Bool) {
