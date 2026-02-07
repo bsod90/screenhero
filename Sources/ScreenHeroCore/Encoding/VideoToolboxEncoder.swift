@@ -46,8 +46,13 @@ public actor VideoToolboxEncoder: VideoEncoder {
             kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true
         ] as CFDictionary
 
+        // Accept multiple pixel formats - prefer YUV for efficiency
         let imageBufferAttributes: CFDictionary = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey: [
+                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                kCVPixelFormatType_32BGRA
+            ],
             kCVPixelBufferWidthKey: config.width,
             kCVPixelBufferHeightKey: config.height,
             kCVPixelBufferMetalCompatibilityKey: true,

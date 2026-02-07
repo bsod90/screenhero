@@ -65,12 +65,17 @@ public actor ScreenCaptureKitSource: FrameSource {
         streamConfig.width = config.width
         streamConfig.height = config.height
         streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(config.fps))
-        streamConfig.pixelFormat = kCVPixelFormatType_32BGRA
+        // Use 420v (YUV) format - hardware encoder prefers this, much more efficient
+        streamConfig.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         streamConfig.showsCursor = true
+
+        // Optimization settings
+        streamConfig.queueDepth = 3  // Small buffer for low latency
+        streamConfig.scalesToFit = true
 
         // Enable low latency mode if available
         if #available(macOS 14.0, *) {
-            streamConfig.captureResolution = .best
+            streamConfig.captureResolution = .automatic  // Let system choose optimal
         }
 
         // Create stream

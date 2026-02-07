@@ -72,20 +72,8 @@ public actor ReceivingPipeline {
         for await packet in packetsStream {
             guard isRunning else { break }
 
-            // Insert into jitter buffer
-            await jitterBuffer.insert(packet)
-
-            // Process available frames
-            await processBufferedFrames()
-        }
-
-        print("[Pipeline] Packet loop ended")
-    }
-
-    private func processBufferedFrames() async {
-        while let packet = await jitterBuffer.pop() {
+            // Decode immediately - no jitter buffer for lowest latency
             do {
-                // Decode frame
                 let pixelBuffer = try await decoder.decode(packet)
 
                 // Calculate latency
@@ -99,20 +87,28 @@ public actor ReceivingPipeline {
                 latencySum += latencyMs
                 averageLatencyMs = latencySum / Double(framesReceived)
 
+                // Log periodically
+                if framesReceived % 60 == 0 {
+                    print("[Pipeline] Frames: \(framesReceived), Latency: \(String(format: "%.1f", averageLatencyMs))ms")
+                }
+
                 // Call frame handler
                 await frameHandler?(pixelBuffer)
 
             } catch VideoDecoderError.waitingForKeyframe {
-                // Silently wait for keyframe - this is expected at stream start
+                // Silently wait for keyframe
                 continue
             } catch {
-                // Only log unexpected errors, and not too frequently
-                if framesReceived % 30 == 0 {
-                    print("Decode error: \(error)")
+                // Only log unexpected errors occasionally
+                if framesReceived % 60 == 0 {
+                    print("[Pipeline] Decode error: \(error)")
                 }
             }
         }
+
+        print("[Pipeline] Packet loop ended")
     }
+
 
     public func stop() async {
         isRunning = false
