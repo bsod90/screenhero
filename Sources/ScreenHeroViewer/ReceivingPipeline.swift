@@ -60,10 +60,14 @@ public actor ReceivingPipeline {
             packetsStream = await loopbackReceiver.getPackets()
         } else if let udpReceiver = receiver as? UDPReceiver {
             packetsStream = await udpReceiver.getPackets()
+        } else if let udpClient = receiver as? UDPStreamClient {
+            packetsStream = await udpClient.getPackets()
         } else {
-            print("Unknown receiver type")
+            print("Unknown receiver type: \(type(of: receiver))")
             return
         }
+
+        print("[Pipeline] Starting packet processing loop")
 
         for await packet in packetsStream {
             guard isRunning else { break }
@@ -74,6 +78,8 @@ public actor ReceivingPipeline {
             // Process available frames
             await processBufferedFrames()
         }
+
+        print("[Pipeline] Packet loop ended")
     }
 
     private func processBufferedFrames() async {
