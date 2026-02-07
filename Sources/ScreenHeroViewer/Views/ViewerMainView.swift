@@ -7,8 +7,18 @@ public struct ViewerMainView: View {
     @State private var manualHost = ""
     @State private var manualPort = "5000"
     @FocusState private var hostFieldFocused: Bool
+    @State private var didAutoConnect = false
 
-    public init() {}
+    // CLI auto-connect parameters
+    private let autoConnectHost: String?
+    private let autoConnectPort: UInt16
+    private let autoConnectMulticast: Bool
+
+    public init(autoConnectHost: String? = nil, autoConnectPort: UInt16 = 5000, autoConnectMulticast: Bool = false) {
+        self.autoConnectHost = autoConnectHost
+        self.autoConnectPort = autoConnectPort
+        self.autoConnectMulticast = autoConnectMulticast
+    }
 
     public var body: some View {
         Group {
@@ -19,6 +29,19 @@ public struct ViewerMainView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 600)
+        .task {
+            // Auto-connect if CLI args provided
+            guard !didAutoConnect else { return }
+            didAutoConnect = true
+
+            if let host = autoConnectHost {
+                print("[Viewer] Auto-connecting to \(host):\(autoConnectPort) via CLI")
+                await viewModel.connectToHost(host: host, port: autoConnectPort)
+            } else if autoConnectMulticast {
+                print("[Viewer] Auto-connecting to multicast via CLI")
+                await viewModel.connectDirect(port: autoConnectPort)
+            }
+        }
     }
 
     private var streamView: some View {
