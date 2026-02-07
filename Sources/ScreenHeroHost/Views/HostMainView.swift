@@ -3,9 +3,14 @@ import ScreenHeroCore
 
 @available(macOS 13.0, *)
 public struct HostMainView: View {
-    @StateObject private var viewModel = HostViewModel()
+    @StateObject private var viewModel: HostViewModel
 
-    public init() {}
+    private let autoStart: Bool
+
+    public init(targetHost: String? = nil, port: UInt16 = 5000, autoStart: Bool = false) {
+        self._viewModel = StateObject(wrappedValue: HostViewModel(targetHost: targetHost, port: port))
+        self.autoStart = autoStart
+    }
 
     public var body: some View {
         VStack(spacing: 20) {
@@ -31,6 +36,9 @@ public struct HostMainView: View {
         .frame(minWidth: 400, minHeight: 500)
         .task {
             await viewModel.initialize()
+            if autoStart {
+                await viewModel.startStreaming()
+            }
         }
     }
 

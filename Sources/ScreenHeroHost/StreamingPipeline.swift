@@ -59,6 +59,7 @@ public actor StreamingPipeline {
 
     private func runPipeline() async {
         let framesStream = await source.frames
+        print("[Pipeline] Starting frame processing loop")
 
         for await sampleBuffer in framesStream {
             guard isRunning else { break }
@@ -74,10 +75,16 @@ public actor StreamingPipeline {
                 framesSent += 1
                 bytesSent += UInt64(packet.data.count)
                 lastFrameTime = DispatchTime.now().uptimeNanoseconds
+
+                // Log every 30 frames
+                if framesSent % 30 == 0 {
+                    print("[Pipeline] Sent \(framesSent) frames, \(String(format: "%.2f", Double(bytesSent) / 1_000_000)) MB")
+                }
             } catch {
-                print("Pipeline error: \(error)")
+                print("[Pipeline] Error: \(error)")
             }
         }
+        print("[Pipeline] Frame loop ended")
     }
 
     public func stop() async {

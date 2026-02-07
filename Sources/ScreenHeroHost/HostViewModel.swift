@@ -19,7 +19,14 @@ public class HostViewModel: ObservableObject {
     private let bonjourService = BonjourService()
     private let hostId = UUID()
 
-    public init() {}
+    // CLI configuration
+    private let targetHost: String?
+    private let port: UInt16
+
+    public init(targetHost: String? = nil, port: UInt16 = 5000) {
+        self.targetHost = targetHost
+        self.port = port
+    }
 
     public func initialize() async {
         do {
@@ -42,11 +49,14 @@ public class HostViewModel: ObservableObject {
         currentPairingCode = code.code
     }
 
-    public func startStreaming(port: UInt16 = MulticastConfig.defaultPort) async {
+    public func startStreaming() async {
         guard !isStreaming else { return }
 
         do {
-            print("[HostViewModel] Starting streaming on port \(port)...")
+            let streamPort = port
+            let streamTarget = targetHost ?? MulticastConfig.groupAddress
+
+            print("[HostViewModel] Starting streaming to \(streamTarget):\(streamPort)...")
 
             // Get selected display
             let displayID: CGDirectDisplayID?
@@ -65,8 +75,8 @@ public class HostViewModel: ObservableObject {
             print("[HostViewModel] Creating encoder...")
             let encoder = VideoToolboxEncoder()
 
-            print("[HostViewModel] Creating UDP sender to \(MulticastConfig.groupAddress):\(port)...")
-            let sender = UDPSender(host: MulticastConfig.groupAddress, port: port)
+            print("[HostViewModel] Creating UDP sender to \(streamTarget):\(streamPort)...")
+            let sender = UDPSender(host: streamTarget, port: streamPort)
 
             pipeline = StreamingPipeline(
                 source: source,
@@ -75,20 +85,24 @@ public class HostViewModel: ObservableObject {
                 config: streamConfig
             )
 
-            // Start advertising on Bonjour
-            print("[HostViewModel] Starting Bonjour advertising...")
-            try await bonjourService.startAdvertising(
-                name: Host.current().localizedName ?? "ScreenHero Host",
-                port: port,
-                metadata: [
-                    "hostId": hostId.uuidString,
-                    "width": String(streamConfig.width),
-                    "height": String(streamConfig.height),
-                    "fps": String(streamConfig.fps),
-                    "codec": streamConfig.codec.rawValue
-                ]
-            )
-            print("[HostViewModel] Bonjour advertising started")
+            // Start advertising on Bonjour (skip if unicast mode)
+            if targetHost == nil {
+                print("[HostViewModel] Starting Bonjour advertising...")
+                try await bonjourService.startAdvertising(
+                    name: Host.current().localizedName ?? "ScreenHero Host",
+                    port: streamPort,
+                    metadata: [
+                        "hostId": hostId.uuidString,
+                        "width": String(streamConfig.width),
+                        "height": String(streamConfig.height),
+                        "fps": String(streamConfig.fps),
+                        "codec": streamConfig.codec.rawValue
+                    ]
+                )
+                print("[HostViewModel] Bonjour advertising started")
+            } else {
+                print("[HostViewModel] Unicast mode - skipping Bonjour")
+            }
 
             // Start streaming
             print("[HostViewModel] Starting pipeline...")
