@@ -205,15 +205,17 @@ actor StreamingSession {
         log("[Session] Input server started on port \(inputPort)")
 
         // Start cursor tracking for local cursor rendering
+        // Use logical (point) dimensions, not native pixels, because NSEvent.mouseLocation
+        // returns coordinates in logical points
         cursorTracker = CursorTracker()
         await cursorTracker?.setUpdateHandler { [weak self] cursorEvent in
             Task {
                 await self?.server?.broadcastInputEvent(cursorEvent)
             }
         }
-        let screenBounds = CGRect(x: 0, y: 0, width: display.nativeWidth, height: display.nativeHeight)
+        let screenBounds = CGRect(x: 0, y: 0, width: display.width, height: display.height)
         await cursorTracker?.start(screenBounds: screenBounds)
-        log("[Session] Cursor tracking started for local rendering")
+        log("[Session] Cursor tracking started for local rendering (bounds: \(display.width)x\(display.height))")
 
         // Start streaming with current config
         try await startPipeline()

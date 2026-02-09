@@ -256,10 +256,13 @@ struct ViewerCLI {
                 log("[Config] Server confirmed: \(serverConfig.width)x\(serverConfig.height) \(serverConfig.codec) \(serverConfig.bitrate/1_000_000)Mbps k=\(serverConfig.keyframeInterval)")
 
                 // Set remote screen dimensions for cursor coordinate mapping
-                if let nativeWidth = serverConfig.serverNativeWidth,
-                   let nativeHeight = serverConfig.serverNativeHeight {
+                // Use logical display dimensions (points), not native pixels, because
+                // cursor positions are sent in logical coordinates
+                if let displayWidth = serverConfig.serverDisplayWidth,
+                   let displayHeight = serverConfig.serverDisplayHeight {
+                    log("[Config] Remote display: \(displayWidth)x\(displayHeight) (logical)")
                     CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
-                        inputCaptureView.setRemoteScreenSize(width: nativeWidth, height: nativeHeight)
+                        inputCaptureView.setRemoteScreenSize(width: displayWidth, height: displayHeight)
                     }
                     CFRunLoopWakeUp(CFRunLoopGetMain())
                 }
