@@ -158,16 +158,46 @@ public class InputCaptureView: NSView {
         remoteScreenHeight = CGFloat(height)
     }
 
+    /// Calculate the actual video display rect within the view
+    /// This accounts for aspect-ratio scaling (letterbox/pillarbox)
+    private func calculateVideoRect() -> CGRect {
+        guard remoteScreenWidth > 0 && remoteScreenHeight > 0 else {
+            return bounds
+        }
+
+        let viewAspect = bounds.width / bounds.height
+        let videoAspect = remoteScreenWidth / remoteScreenHeight
+
+        var videoRect: CGRect
+
+        if videoAspect > viewAspect {
+            // Video is wider than view - letterbox (black bars top/bottom)
+            let videoHeight = bounds.width / videoAspect
+            let yOffset = (bounds.height - videoHeight) / 2
+            videoRect = CGRect(x: 0, y: yOffset, width: bounds.width, height: videoHeight)
+        } else {
+            // Video is taller than view - pillarbox (black bars left/right)
+            let videoWidth = bounds.height * videoAspect
+            let xOffset = (bounds.width - videoWidth) / 2
+            videoRect = CGRect(x: xOffset, y: 0, width: videoWidth, height: bounds.height)
+        }
+
+        return videoRect
+    }
+
     /// Update cursor position from host (for local cursor rendering)
     public func updateCursorPosition(_ event: InputEvent) {
         guard event.type == .cursorPosition else { return }
 
-        // Map remote coordinates to local view coordinates
-        let scaleX = bounds.width / remoteScreenWidth
-        let scaleY = bounds.height / remoteScreenHeight
+        // Calculate the actual video display rect (accounting for aspect-ratio scaling)
+        let videoRect = calculateVideoRect()
 
-        let localX = CGFloat(event.x) * scaleX
-        let localY = CGFloat(event.y) * scaleY
+        // Map remote coordinates to local view coordinates within the video rect
+        let scaleX = videoRect.width / remoteScreenWidth
+        let scaleY = videoRect.height / remoteScreenHeight
+
+        let localX = videoRect.minX + CGFloat(event.x) * scaleX
+        let localY = videoRect.minY + CGFloat(event.y) * scaleY
 
         // Update cursor layer position (disable implicit animations for smooth tracking)
         CATransaction.begin()
