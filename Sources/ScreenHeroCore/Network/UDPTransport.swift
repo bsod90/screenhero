@@ -726,6 +726,27 @@ public actor UDPStreamServer: NetworkSender {
             subscriber.connection.send(content: data, completion: .idempotent)
         }
     }
+
+    /// Send tile updates to all subscribers
+    /// Tiles are sent as individual packets (no fragmentation needed - they're already small)
+    public func sendTiles(_ tiles: [TileUpdate]) async throws {
+        guard isActive, !subscribers.isEmpty else { return }
+
+        for tile in tiles {
+            let data = tile.serialize()
+
+            // Tiles should be small enough to fit in a single UDP packet
+            // If too large, log a warning
+            if data.count > 65000 {
+                netLog("[UDPServer] WARNING: Tile too large (\(data.count) bytes), skipping")
+                continue
+            }
+
+            for (_, subscriber) in subscribers {
+                subscriber.connection.send(content: data, completion: .idempotent)
+            }
+        }
+    }
 }
 
 // MARK: - Client-style UDP Receiver (connects to server)
@@ -753,6 +774,9 @@ public actor UDPStreamClient: NetworkReceiver {
 
     /// Callback for when server sends config
     private var configHandler: ((StreamConfigData) -> Void)?
+
+    /// Callback for tile updates (partial screen updates)
+    private var tileUpdateHandler: ((TileUpdate) -> Void)?
 
     /// Requested config to send on connect
     private var requestedConfig: StreamConfigData?
@@ -787,6 +811,11 @@ public actor UDPStreamClient: NetworkReceiver {
     /// Set the handler for config updates from server
     public func setConfigHandler(_ handler: @escaping (StreamConfigData) -> Void) {
         configHandler = handler
+    }
+
+    /// Set the handler for tile updates from server
+    public func setTileUpdateHandler(_ handler: @escaping (TileUpdate) -> Void) {
+        tileUpdateHandler = handler
     }
 
     /// Set the config to request from server on connect
@@ -939,15 +968,24 @@ public actor UDPStreamClient: NetworkReceiver {
             return
         }
 
-        // Check if this is an input event (e.g., releaseCapture from host)
-        // InputEvent magic is 0x53484950 ("SHIP") at the start
+        // Check for special packet types by magic number
         if data.count >= 4 {
             let magic = data.withUnsafeBytes { ptr -> UInt32 in
                 ptr.load(as: UInt32.self).bigEndian
             }
+
+            // Input event (magic 0x53484950 = "SHIP")
             if magic == InputEvent.magic {
                 if let inputEvent = InputEvent.deserialize(from: data) {
                     inputEventHandler?(inputEvent)
+                }
+                return
+            }
+
+            // Tile update (magic 0x5348544C = "SHTL")
+            if magic == TileUpdate.magic {
+                if let tileUpdate = TileUpdate.deserialize(from: data) {
+                    tileUpdateHandler?(tileUpdate)
                 }
                 return
             }

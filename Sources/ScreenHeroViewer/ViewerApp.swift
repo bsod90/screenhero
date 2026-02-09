@@ -251,9 +251,28 @@ struct ViewerCLI {
             )
             await client.setRequestedConfig(requestedConfig)
 
-            // Log when server confirms config
+            // Log when server confirms config and set remote screen dimensions
             await client.setConfigHandler { serverConfig in
                 log("[Config] Server confirmed: \(serverConfig.width)x\(serverConfig.height) \(serverConfig.codec) \(serverConfig.bitrate/1_000_000)Mbps k=\(serverConfig.keyframeInterval)")
+
+                // Set remote screen dimensions for cursor coordinate mapping
+                if let nativeWidth = serverConfig.serverNativeWidth,
+                   let nativeHeight = serverConfig.serverNativeHeight {
+                    CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                        inputCaptureView.setRemoteScreenSize(width: nativeWidth, height: nativeHeight)
+                    }
+                    CFRunLoopWakeUp(CFRunLoopGetMain())
+                }
+            }
+
+            // Handle cursor position events from host (sent via main video connection)
+            await client.setInputEventHandler { inputEvent in
+                if inputEvent.type == .cursorPosition {
+                    CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                        inputCaptureView.updateCursorPosition(inputEvent)
+                    }
+                    CFRunLoopWakeUp(CFRunLoopGetMain())
+                }
             }
 
             let decoder = VideoToolboxDecoder()

@@ -5,6 +5,10 @@ public protocol NetworkSender: Actor {
     /// Send an encoded packet
     func send(_ packet: EncodedPacket) async throws
 
+    /// Send tile updates (for partial screen updates)
+    /// Default implementation does nothing - override in senders that support tiles
+    func sendTiles(_ tiles: [TileUpdate]) async throws
+
     /// Start the sender
     func start() async throws
 
@@ -13,6 +17,14 @@ public protocol NetworkSender: Actor {
 
     /// Whether the sender is currently active
     var isActive: Bool { get }
+}
+
+/// Default implementation for sendTiles (no-op for senders that don't support tiles)
+public extension NetworkSender {
+    func sendTiles(_ tiles: [TileUpdate]) async throws {
+        // Default: do nothing
+        // Senders that support tile updates should override this
+    }
 }
 
 /// Protocol for receiving encoded packets from the network

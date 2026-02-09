@@ -1,6 +1,8 @@
 import Foundation
 import ScreenHeroCore
 import CoreVideo
+import CoreGraphics
+import ImageIO
 
 /// Connects network receiver → decoder → renderer
 public actor ReceivingPipeline {
@@ -17,6 +19,11 @@ public actor ReceivingPipeline {
     // Statistics
     public private(set) var framesReceived: UInt64 = 0
     public private(set) var bytesReceived: UInt64 = 0
+    private var tileUpdatesReceived: UInt64 = 0
+
+    // Tile compositing: maintain last full frame to composite tiles onto
+    private var lastFullFrame: CVPixelBuffer?
+    private var tileCompositor: TileCompositor?
 
     public init(
         receiver: any NetworkReceiver,
@@ -48,11 +55,52 @@ public actor ReceivingPipeline {
         // Start receiver
         try await receiver.start()
 
+        // Set up tile update handler if receiver supports it
+        if let udpClient = receiver as? UDPStreamClient {
+            await udpClient.setTileUpdateHandler { [weak self] tileUpdate in
+                Task {
+                    await self?.handleTileUpdate(tileUpdate)
+                }
+            }
+        }
+
         isRunning = true
 
         // Start receive task
         receiveTask = Task { [weak self] in
             await self?.runPipeline()
+        }
+    }
+
+    /// Handle a tile update by compositing it onto the last full frame
+    private func handleTileUpdate(_ tile: TileUpdate) async {
+        tileUpdatesReceived += 1
+        bytesReceived += UInt64(tile.jpegData.count)
+
+        // Need a base frame to composite onto
+        guard let baseFrame = lastFullFrame else {
+            // No full frame yet, skip tile
+            return
+        }
+
+        // Initialize compositor if needed
+        if tileCompositor == nil {
+            tileCompositor = TileCompositor()
+        }
+
+        // Composite tile onto base frame
+        if let compositedFrame = tileCompositor?.compositeTile(tile, onto: baseFrame) {
+            // Update the last frame with composited result
+            lastFullFrame = compositedFrame
+
+            // Display the composited frame
+            latestFrame = compositedFrame
+            latestFrameTimestamp = tile.captureTimestamp
+        }
+
+        // Log periodically
+        if tileUpdatesReceived % 60 == 0 {
+            netLog("[Pipeline] Tile updates received: \(tileUpdatesReceived)")
         }
     }
 
@@ -106,6 +154,9 @@ public actor ReceivingPipeline {
                 framesReceived += 1
                 bytesReceived += UInt64(packet.data.count)
 
+                // Save full frame for tile compositing
+                lastFullFrame = pixelBuffer
+
                 // Replace latest frame (non-blocking) - older frames are dropped
                 if latestFrame != nil {
                     framesDropped += 1
@@ -118,7 +169,8 @@ public actor ReceivingPipeline {
                     netLog("[Pipeline] First frame decoded!")
                 } else if framesReceived % 60 == 0 {
                     let dropRate = framesDropped > 0 ? Double(framesDropped) / Double(framesReceived) * 100 : 0
-                    netLog("[Pipeline] Frames: \(framesReceived), Dropped: \(framesDropped) (\(String(format: "%.1f", dropRate))%), Data: \(String(format: "%.1f", Double(bytesReceived) / 1_000_000))MB")
+                    let tileRatio = tileUpdatesReceived > 0 ? Double(tileUpdatesReceived) / Double(framesReceived + tileUpdatesReceived) * 100 : 0
+                    netLog("[Pipeline] Frames: \(framesReceived), Tiles: \(tileUpdatesReceived) (\(String(format: "%.1f", tileRatio))%), Dropped: \(framesDropped), Data: \(String(format: "%.1f", Double(bytesReceived) / 1_000_000))MB")
                 }
 
             } catch VideoDecoderError.waitingForKeyframe {

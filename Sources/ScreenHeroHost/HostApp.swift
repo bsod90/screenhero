@@ -140,6 +140,7 @@ actor StreamingSession {
     private var server: UDPStreamServer?
     private var inputServer: UDPInputServer?
     private var inputHandler: InputEventHandler?
+    private var cursorTracker: CursorTracker?
     private var display: DisplayInfo?
 
     init(port: UInt16, inputPort: UInt16, displayIndex: Int, initialConfig: StreamConfigData) {
@@ -202,6 +203,17 @@ actor StreamingSession {
         try await inputServer?.start()
         log("[Session] Server started on port \(port)")
         log("[Session] Input server started on port \(inputPort)")
+
+        // Start cursor tracking for local cursor rendering
+        cursorTracker = CursorTracker()
+        await cursorTracker?.setUpdateHandler { [weak self] cursorEvent in
+            Task {
+                await self?.server?.broadcastInputEvent(cursorEvent)
+            }
+        }
+        let screenBounds = CGRect(x: 0, y: 0, width: display.nativeWidth, height: display.nativeHeight)
+        await cursorTracker?.start(screenBounds: screenBounds)
+        log("[Session] Cursor tracking started for local rendering")
 
         // Start streaming with current config
         try await startPipeline()

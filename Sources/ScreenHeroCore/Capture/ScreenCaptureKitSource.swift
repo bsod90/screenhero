@@ -76,7 +76,9 @@ public actor ScreenCaptureKitSource: FrameSource {
         streamConfig.height = config.height
         streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(config.fps))
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA
-        streamConfig.showsCursor = true
+        // Hide cursor from capture - it will be rendered locally on the viewer
+        // for smoother cursor movement even with packet loss
+        streamConfig.showsCursor = false
         // Increased queue depth for 4K to prevent frame drops
         streamConfig.queueDepth = 6
 
