@@ -67,7 +67,8 @@ class LatencyMarkerWindow {
     }
 
     private func updateMarker() {
-        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        // Use wall-clock time for cross-machine compatibility (NTP-synchronized)
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         let slotIndex = Int((nowMs / 100) % 6)
         markerView.currentColor = Self.colors[slotIndex]
         markerView.timestampMs = nowMs
@@ -76,13 +77,15 @@ class LatencyMarkerWindow {
 
     /// Get the current time slot (0-5) based on current time
     static func currentSlot() -> Int {
-        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        // Use wall-clock time for cross-machine compatibility (NTP-synchronized)
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         return Int((nowMs / 100) % 6)
     }
 
     /// Decode latency from detected slot and current time
     static func calculateLatency(detectedSlot: Int) -> UInt64 {
-        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        // Use wall-clock time for cross-machine compatibility (NTP-synchronized)
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         let currentSlot = Int((nowMs / 100) % 6)
         let offsetInSlot = nowMs % 100
 
@@ -98,6 +101,16 @@ class LatencyMarkerView: NSView {
     var currentColor: NSColor = .red
     var timestampMs: UInt64 = 0
 
+    // Pre-cached text attributes (created once, not per-frame)
+    // Using monospacedDigitSystemFont for reliability and appropriate number display
+    private let textAttributes: [NSAttributedString.Key: Any] = {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .bold)
+        return [
+            .font: font,
+            .foregroundColor: NSColor.black
+        ]
+    }()
+
     override func draw(_ dirtyRect: NSRect) {
         // Draw colored square
         currentColor.setFill()
@@ -105,18 +118,14 @@ class LatencyMarkerView: NSView {
 
         // Draw timestamp text for debugging
         let text = String(format: "%llu", timestampMs % 1000)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .bold),
-            .foregroundColor: NSColor.black
-        ]
-        let textSize = text.size(withAttributes: attributes)
+        let textSize = text.size(withAttributes: textAttributes)
         let textRect = NSRect(
             x: (bounds.width - textSize.width) / 2,
             y: (bounds.height - textSize.height) / 2,
             width: textSize.width,
             height: textSize.height
         )
-        text.draw(in: textRect, withAttributes: attributes)
+        text.draw(in: textRect, withAttributes: textAttributes)
     }
 }
 

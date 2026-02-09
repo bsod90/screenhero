@@ -57,8 +57,8 @@ class LatencyDetector {
         // Match to closest color
         guard let slot = matchColorToSlot(r: r, g: g, b: b) else { return nil }
 
-        // Calculate latency
-        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        // Calculate latency using wall-clock time for cross-machine compatibility (NTP-synchronized)
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         let currentSlot = Int((nowMs / 100) % 6)
         let offsetInSlot = nowMs % 100
 
@@ -129,7 +129,8 @@ class NetworkLatencyLogger {
     func recordLatency(captureTimestamp: UInt64) {
         guard captureTimestamp > 0 else { return }
 
-        let nowNs = DispatchTime.now().uptimeNanoseconds
+        // Use wall-clock time for cross-machine compatibility (NTP-synchronized)
+        let nowNs = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
         let latencyMs = (nowNs - captureTimestamp) / 1_000_000
 
         latencySamples.append(latencyMs)

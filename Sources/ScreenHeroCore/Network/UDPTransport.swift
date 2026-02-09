@@ -20,7 +20,7 @@ public actor UDPSender: NetworkSender {
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
     private var connection: NWConnection?
-    private let queue = DispatchQueue(label: "com.screenhero.udpsender")
+    private let queue = DispatchQueue(label: "com.screenhero.udpsender", qos: .userInteractive)
     private let packetProtocol: PacketProtocol
 
     public private(set) var isActive = false
@@ -102,7 +102,7 @@ public actor UDPReceiver: NetworkReceiver {
     private let multicastGroup: String?
     private var connectionGroup: NWConnectionGroup?
     private var listener: NWListener?
-    private let queue = DispatchQueue(label: "com.screenhero.udpreceiver")
+    private let queue = DispatchQueue(label: "com.screenhero.udpreceiver", qos: .userInteractive)
     private let packetProtocol: PacketProtocol
     private var continuation: AsyncStream<EncodedPacket>.Continuation?
     private var pendingFragments: [UInt64: [NetworkPacket]] = [:]
@@ -362,7 +362,7 @@ public actor UDPStreamServer: NetworkSender {
     private let port: UInt16
     private var listener: NWListener?
     private var subscribers: [String: Subscriber] = [:]
-    private let queue = DispatchQueue(label: "com.screenhero.udpserver")
+    private let queue = DispatchQueue(label: "com.screenhero.udpserver", qos: .userInteractive)
     private let packetProtocol: PacketProtocol
 
     public private(set) var isActive = false
@@ -546,7 +546,7 @@ public actor UDPStreamClient: NetworkReceiver {
     private let serverHost: String
     private let serverPort: UInt16
     private var connection: NWConnection?
-    private let queue = DispatchQueue(label: "com.screenhero.udpclient")
+    private let queue = DispatchQueue(label: "com.screenhero.udpclient", qos: .userInteractive)
     private let packetProtocol: PacketProtocol
     private var continuation: AsyncStream<EncodedPacket>.Continuation?
     private var pendingFragments: [UInt64: [NetworkPacket]] = [:]

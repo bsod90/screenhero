@@ -118,6 +118,13 @@ public actor VideoToolboxEncoder: VideoEncoder {
                     value: kCFBooleanTrue
                 )
             }
+
+            // Eliminate encoder output buffering for single-frame latency
+            VTSessionSetProperty(
+                session,
+                key: kVTCompressionPropertyKey_MaxFrameDelayCount,
+                value: 0 as CFNumber
+            )
         }
 
         // H.264 specific settings
@@ -175,7 +182,8 @@ public actor VideoToolboxEncoder: VideoEncoder {
 
         let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let duration = CMSampleBufferGetDuration(sampleBuffer)
-        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
+        // Use wall-clock time for cross-machine compatibility (NTP-synchronized)
+        let captureTimestamp = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
         let currentFrameId = frameCount
         frameCount += 1
 
@@ -431,7 +439,8 @@ public actor VideoToolboxEncoder: VideoEncoder {
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let ptsNs = UInt64(CMTimeGetSeconds(pts) * 1_000_000_000)
-        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
+        // Use wall-clock time for cross-machine compatibility (NTP-synchronized)
+        let captureTimestamp = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
 
         let currentFrameId = frameCount
         frameCount += 1

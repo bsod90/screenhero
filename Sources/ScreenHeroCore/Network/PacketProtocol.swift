@@ -49,41 +49,49 @@ public struct PacketProtocol: Sendable {
 
     /// Reassemble network packets into an encoded packet
     /// Returns nil if fragments are incomplete
+    /// Optimized: pre-allocate array and insert at index instead of sorting
     public func reassemble(fragments: [NetworkPacket]) -> EncodedPacket? {
         guard !fragments.isEmpty else { return nil }
 
-        // Sort by fragment index
-        let sorted = fragments.sorted { $0.fragmentIndex < $1.fragmentIndex }
+        let first = fragments[0]
+        let totalCount = Int(first.totalFragments)
 
-        // Verify we have all fragments
-        let first = sorted[0]
-        guard sorted.count == Int(first.totalFragments) else { return nil }
+        // Pre-allocate ordered array with nil placeholders
+        var ordered = [NetworkPacket?](repeating: nil, count: totalCount)
 
-        // Verify fragment indices are sequential
-        for (index, fragment) in sorted.enumerated() {
-            guard fragment.fragmentIndex == index else { return nil }
+        // Insert each fragment at its index position (O(n) instead of O(n log n) sort)
+        for fragment in fragments {
+            let idx = Int(fragment.fragmentIndex)
+            guard idx < totalCount else { return nil }
             guard fragment.frameId == first.frameId else { return nil }
+            ordered[idx] = fragment
         }
+
+        // Verify completeness - all slots must be filled
+        guard ordered.allSatisfy({ $0 != nil }) else { return nil }
 
         // Combine payloads
         var combinedData = Data()
-        combinedData.reserveCapacity(sorted.reduce(0) { $0 + $1.payload.count })
+        combinedData.reserveCapacity(ordered.reduce(0) { $0 + ($1?.payload.count ?? 0) })
 
-        for fragment in sorted {
-            combinedData.append(fragment.payload)
+        for fragment in ordered {
+            combinedData.append(fragment!.payload)
         }
 
+        // Get the first fragment (index 0) for metadata
+        let firstFragment = ordered[0]!
+
         return EncodedPacket(
-            frameId: first.frameId,
+            frameId: firstFragment.frameId,
             data: combinedData,
-            presentationTimeNs: first.presentationTimeNs,
-            isKeyframe: first.isKeyframe,
-            codec: first.codec,
-            width: Int(first.width),
-            height: Int(first.height),
-            captureTimestamp: first.captureTimestamp,
+            presentationTimeNs: firstFragment.presentationTimeNs,
+            isKeyframe: firstFragment.isKeyframe,
+            codec: firstFragment.codec,
+            width: Int(firstFragment.width),
+            height: Int(firstFragment.height),
+            captureTimestamp: firstFragment.captureTimestamp,
             encodeTimestamp: DispatchTime.now().uptimeNanoseconds,
-            parameterSets: first.parameterSets
+            parameterSets: firstFragment.parameterSets
         )
     }
 }
@@ -151,8 +159,7 @@ public struct NetworkPacket: Sendable {
 
     /// Serialize the packet to bytes for transmission
     public func serialize() -> Data {
-        var data = Data()
-        data.reserveCapacity(PacketProtocol.headerSize + payload.count + (parameterSets?.count ?? 0))
+        var data = Data(capacity: PacketProtocol.headerSize + payload.count + (parameterSets?.count ?? 0))
 
         // Magic number (4 bytes)
         withUnsafeBytes(of: UInt32(0x53485250).bigEndian) { data.append(contentsOf: $0) } // "SHRP"
