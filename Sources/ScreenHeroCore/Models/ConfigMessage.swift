@@ -94,6 +94,7 @@ public struct StreamConfigData: Sendable, Codable {
     public var keyframeInterval: Int
     public var fullColorMode: Bool
     public var useNativeResolution: Bool
+    public var maxPacketSize: Int
 
     // Display info from server
     public var serverDisplayWidth: Int?
@@ -110,6 +111,7 @@ public struct StreamConfigData: Sendable, Codable {
         keyframeInterval: Int = 30,
         fullColorMode: Bool = false,
         useNativeResolution: Bool = false,
+        maxPacketSize: Int = 1400,
         serverDisplayWidth: Int? = nil,
         serverDisplayHeight: Int? = nil,
         serverNativeWidth: Int? = nil,
@@ -123,6 +125,7 @@ public struct StreamConfigData: Sendable, Codable {
         self.keyframeInterval = keyframeInterval
         self.fullColorMode = fullColorMode
         self.useNativeResolution = useNativeResolution
+        self.maxPacketSize = maxPacketSize
         self.serverDisplayWidth = serverDisplayWidth
         self.serverDisplayHeight = serverDisplayHeight
         self.serverNativeWidth = serverNativeWidth
@@ -139,6 +142,7 @@ public struct StreamConfigData: Sendable, Codable {
             bitrate: bitrate,
             keyframeInterval: keyframeInterval,
             lowLatencyMode: true,
+            maxPacketSize: maxPacketSize,
             fullColorMode: fullColorMode
         )
     }
@@ -152,7 +156,8 @@ public struct StreamConfigData: Sendable, Codable {
             codec: config.codec == .hevc ? "hevc" : "h264",
             bitrate: config.bitrate,
             keyframeInterval: config.keyframeInterval,
-            fullColorMode: config.fullColorMode
+            fullColorMode: config.fullColorMode,
+            maxPacketSize: config.maxPacketSize
         )
     }
 }

@@ -6,6 +6,8 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 
 # Binaries (keep build script, ignore built binaries)
+ScreenHeroHost
+ScreenHeroViewer
 bin/ScreenHeroHost
 bin/ScreenHeroViewer
 bin/*.zip

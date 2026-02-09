@@ -17,13 +17,16 @@ A low-latency screen sharing application for macOS, built with Swift and leverag
 ## Building
 
 ```bash
-# Build release binaries
-./bin/build.sh
+# Build release binaries into ./bin
+./build.sh
+
+# Pull latest changes and rebuild
+./update.sh
 
 # Or build manually
 swift build -c release
-cp .build/release/ScreenHeroHost .
-cp .build/release/ScreenHeroViewer .
+cp .build/release/ScreenHeroHost ./bin/
+cp .build/release/ScreenHeroViewer ./bin/
 ```
 
 ## Running
@@ -32,16 +35,16 @@ cp .build/release/ScreenHeroViewer .
 
 ```bash
 # Default settings (1920x1080 @ 60fps, H.264, port 5000)
-./ScreenHeroHost
+./bin/ScreenHeroHost
 
 # 1440p @ 60fps with HEVC (recommended)
-./ScreenHeroHost -w 2560 -h 1440 -b 30 -c hevc
+./bin/ScreenHeroHost -w 2560 -h 1440 -b 30 -c hevc
 
 # 4K @ 60fps with HEVC
-./ScreenHeroHost -w 3840 -h 2160 -b 50 -c hevc
+./bin/ScreenHeroHost -w 3840 -h 2160 -b 50 -c hevc
 
 # Show all options
-./ScreenHeroHost --help
+./bin/ScreenHeroHost --help
 ```
 
 Grant Screen Recording permission when prompted (System Settings → Privacy & Security → Screen Recording).
@@ -62,16 +65,16 @@ Grant Screen Recording permission when prompted (System Settings → Privacy & S
 
 ```bash
 # Connect to host IP
-./ScreenHeroViewer -h 192.168.1.100
+./bin/ScreenHeroViewer -h 192.168.1.100
 
 # With custom port
-./ScreenHeroViewer -h 192.168.1.100 -p 5000
+./bin/ScreenHeroViewer -h 192.168.1.100 -p 5000
 
 # Fullscreen mode
-./ScreenHeroViewer -h 192.168.1.100 -f
+./bin/ScreenHeroViewer -h 192.168.1.100 -f
 
 # Show all options
-./ScreenHeroViewer --help
+./bin/ScreenHeroViewer --help
 ```
 
 **Viewer options:**

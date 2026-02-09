@@ -401,6 +401,9 @@ public actor UDPStreamServer: NetworkSender {
     /// Callback for when client requests config change
     private var configChangeHandler: ((StreamConfigData) async -> Bool)?
 
+    /// Enable packet pacing to reduce burst loss on LAN
+    private let pacingEnabled: Bool = true
+
     public init(port: UInt16, maxPacketSize: Int = 1400) {
         self.port = port
         self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
@@ -458,7 +461,7 @@ public actor UDPStreamServer: NetworkSender {
             }
 
             listener?.newConnectionHandler = { [weak self] connection in
-                self?.handleNewConnection(connection)
+                Task { await self?.handleNewConnection(connection) }
             }
 
             listener?.start(queue: queue)
@@ -685,13 +688,28 @@ public actor UDPStreamServer: NetworkSender {
             netLog("[UDPServer] Sending first frame to \(subscribers.count) subscriber(s), \(fragments.count) fragments")
         }
 
-        for (_, subscriber) in subscribers {
-            for fragment in fragments {
-                let data = fragment.serialize()
+        let fragmentCount = fragments.count
+        let pacingDelayNs = pacingEnabled ? pacingDelayNs(fragmentCount: fragmentCount) : 0
+
+        for fragment in fragments {
+            let data = fragment.serialize()
+            for (_, subscriber) in subscribers {
                 // Fire-and-forget for low latency - don't wait for completion
                 subscriber.connection.send(content: data, completion: .idempotent)
             }
+
+            if pacingDelayNs > 0 {
+                try? await Task.sleep(nanoseconds: pacingDelayNs)
+            }
         }
+    }
+
+    private func pacingDelayNs(fragmentCount: Int) -> UInt64 {
+        guard fragmentCount > 1 else { return 0 }
+        let fps = max(1, currentConfig?.fps ?? 60)
+        let frameIntervalNs = UInt64(1_000_000_000 / fps)
+        let spacing = frameIntervalNs / UInt64(fragmentCount)
+        return spacing
     }
 
     public var subscriberCount: Int {
@@ -1043,5 +1061,242 @@ public actor UDPStreamClient: NetworkReceiver {
         default:
             break
         }
+    }
+}
+
+// MARK: - Separate UDP input channel (recommended)
+
+/// UDP server that receives only input events and sends optional responses
+public actor UDPInputServer {
+    private let port: UInt16
+    private var listener: NWListener?
+    private let queue = DispatchQueue(label: "com.screenhero.udpinputserver", qos: .userInteractive)
+    private var connections: [String: NWConnection] = [:]
+    private var inputEventHandler: ((InputEvent) -> InputEvent?)?
+
+    public private(set) var isActive = false
+
+    public init(port: UInt16) {
+        self.port = port
+    }
+
+    public func setInputEventHandler(_ handler: @escaping (InputEvent) -> InputEvent?) {
+        inputEventHandler = handler
+        netLog("[UDPInputServer] Input event handler SET")
+    }
+
+    public func start() async throws {
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            throw NetworkTransportError.invalidAddress
+        }
+
+        listener = try NWListener(using: params, on: nwPort)
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            listener?.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
+                Task {
+                    await self.handleListenerState(state, continuation: cont)
+                }
+            }
+
+            listener?.newConnectionHandler = { [weak self] connection in
+                guard let self = self else { return }
+                Task {
+                    await self.handleNewConnection(connection)
+                }
+            }
+
+            listener?.start(queue: queue)
+        }
+    }
+
+    private func handleNewConnection(_ connection: NWConnection) async {
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            Task {
+                await self.handleConnectionState(state, connection: connection)
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    private nonisolated func receiveOnConnection(_ connection: NWConnection) {
+        connection.receiveMessage { [weak self] content, _, _, error in
+            guard let self = self else { return }
+
+            if let data = content, data.count >= 4 {
+                let magic = UInt32(data[data.startIndex]) << 24 |
+                            UInt32(data[data.startIndex + 1]) << 16 |
+                            UInt32(data[data.startIndex + 2]) << 8 |
+                            UInt32(data[data.startIndex + 3])
+                if magic == InputEvent.magic, let inputEvent = InputEvent.deserialize(from: data) {
+                    Task {
+                        await self.handleInputEvent(inputEvent, from: connection)
+                    }
+                }
+            }
+
+            if error == nil {
+                self.receiveOnConnection(connection)
+            }
+        }
+    }
+
+    private func handleListenerState(_ state: NWListener.State, continuation: CheckedContinuation<Void, Error>) async {
+        switch state {
+        case .ready:
+            netLog("[UDPInputServer] Listening on port \(port)")
+            isActive = true
+            continuation.resume()
+        case .failed(let error):
+            netLog("[UDPInputServer] Failed: \(error)")
+            isActive = false
+            continuation.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
+        case .cancelled:
+            isActive = false
+        default:
+            break
+        }
+    }
+
+    private func handleConnectionState(_ state: NWConnection.State, connection: NWConnection) async {
+        switch state {
+        case .ready:
+            if let endpoint = connection.currentPath?.remoteEndpoint,
+               case .hostPort(let host, let port) = endpoint {
+                let id = "\(host):\(port)"
+                connections[id] = connection
+                netLog("[UDPInputServer] Connection ready from \(id)")
+            }
+            receiveOnConnection(connection)
+        case .failed(let error):
+            netLog("[UDPInputServer] Connection failed: \(error)")
+        case .cancelled:
+            if let endpoint = connection.currentPath?.remoteEndpoint,
+               case .hostPort(let host, let port) = endpoint {
+                let id = "\(host):\(port)"
+                connections.removeValue(forKey: id)
+            }
+        default:
+            break
+        }
+    }
+
+    private func handleInputEvent(_ event: InputEvent, from connection: NWConnection) async {
+        netLog("[UDPInputServer] INPUT RECEIVED: \(event.type)")
+        if let response = inputEventHandler?(event) {
+            let responseData = response.serialize()
+            connection.send(content: responseData, completion: .idempotent)
+        }
+    }
+
+    public func stop() async {
+        listener?.cancel()
+        listener = nil
+        for (_, conn) in connections {
+            conn.cancel()
+        }
+        connections.removeAll()
+        isActive = false
+    }
+}
+
+/// UDP client that sends input events and receives optional responses
+public actor UDPInputClient {
+    private let serverHost: String
+    private let serverPort: UInt16
+    private var connection: NWConnection?
+    private let queue = DispatchQueue(label: "com.screenhero.udpinputclient", qos: .userInteractive)
+    private var inputEventHandler: ((InputEvent) -> Void)?
+
+    public private(set) var isActive = false
+
+    public init(serverHost: String, serverPort: UInt16) {
+        self.serverHost = serverHost
+        self.serverPort = serverPort
+    }
+
+    public func setInputEventHandler(_ handler: @escaping (InputEvent) -> Void) {
+        inputEventHandler = handler
+    }
+
+    public func start() async throws {
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+
+        connection = NWConnection(
+            host: NWEndpoint.Host(serverHost),
+            port: NWEndpoint.Port(rawValue: serverPort)!,
+            using: params
+        )
+
+        connection?.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            Task {
+                await self.handleState(state)
+            }
+        }
+
+        connection?.start(queue: queue)
+    }
+
+    private func startReceiving() {
+        guard let conn = connection else { return }
+        receiveLoop(on: conn)
+    }
+
+    private nonisolated func receiveLoop(on connection: NWConnection) {
+        connection.receiveMessage { [weak self] content, _, _, error in
+            guard let self = self else { return }
+
+            if let data = content, data.count >= 4 {
+                let magic = UInt32(data[data.startIndex]) << 24 |
+                            UInt32(data[data.startIndex + 1]) << 16 |
+                            UInt32(data[data.startIndex + 2]) << 8 |
+                            UInt32(data[data.startIndex + 3])
+                if magic == InputEvent.magic, let inputEvent = InputEvent.deserialize(from: data) {
+                    Task { await self.handleIncomingEvent(inputEvent) }
+                }
+            }
+
+            if error == nil {
+                self.receiveLoop(on: connection)
+            }
+        }
+    }
+
+    public func sendInputEvent(_ event: InputEvent) {
+        guard isActive, let connection = connection else {
+            netLog("[UDPInputClient] Cannot send input: isActive=\(isActive), connection=\(connection != nil)")
+            return
+        }
+        connection.send(content: event.serialize(), completion: .idempotent)
+    }
+
+    private func handleState(_ state: NWConnection.State) async {
+        switch state {
+        case .ready:
+            isActive = true
+            startReceiving()
+            netLog("[UDPInputClient] Connected to \(serverHost):\(serverPort)")
+        case .failed, .cancelled:
+            isActive = false
+        default:
+            break
+        }
+    }
+
+    private func handleIncomingEvent(_ event: InputEvent) async {
+        inputEventHandler?(event)
+    }
+
+    public func stop() async {
+        connection?.cancel()
+        connection = nil
+        isActive = false
     }
 }

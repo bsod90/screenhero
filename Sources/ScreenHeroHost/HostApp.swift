@@ -133,15 +133,18 @@ class LatencyMarkerView: NSView {
 @available(macOS 14.0, *)
 actor StreamingSession {
     private let port: UInt16
+    private let inputPort: UInt16
     private let displayIndex: Int
     private var currentConfig: StreamConfigData
     private var pipeline: StreamingPipeline?
     private var server: UDPStreamServer?
+    private var inputServer: UDPInputServer?
     private var inputHandler: InputEventHandler?
     private var display: DisplayInfo?
 
-    init(port: UInt16, displayIndex: Int, initialConfig: StreamConfigData) {
+    init(port: UInt16, inputPort: UInt16, displayIndex: Int, initialConfig: StreamConfigData) {
         self.port = port
+        self.inputPort = inputPort
         self.displayIndex = displayIndex
         self.currentConfig = initialConfig
     }
@@ -172,10 +175,16 @@ actor StreamingSession {
         }
 
         // Create server (keeps running across config changes)
-        server = UDPStreamServer(port: port)
+        server = UDPStreamServer(port: port, maxPacketSize: currentConfig.maxPacketSize)
         inputHandler = InputEventHandler()
 
         await server?.setInputEventHandler { [inputHandler] inputEvent in
+            return inputHandler?.handleEvent(inputEvent)
+        }
+
+        // Separate input server to reduce input loss under heavy video load
+        inputServer = UDPInputServer(port: inputPort)
+        await inputServer?.setInputEventHandler { [inputHandler] inputEvent in
             return inputHandler?.handleEvent(inputEvent)
         }
 
@@ -190,7 +199,9 @@ actor StreamingSession {
 
         // Start server
         try await server?.start()
+        try await inputServer?.start()
         log("[Session] Server started on port \(port)")
+        log("[Session] Input server started on port \(inputPort)")
 
         // Start streaming with current config
         try await startPipeline()
@@ -322,11 +333,13 @@ struct HostCLI {
                 bitrate: args.bitrate,
                 keyframeInterval: args.keyframeInterval,
                 fullColorMode: args.fullColor,
-                useNativeResolution: args.native
+                useNativeResolution: args.native,
+                maxPacketSize: args.maxPacketSize
             )
 
             let session = StreamingSession(
                 port: args.port,
+                inputPort: args.inputPort ?? args.port + 1,
                 displayIndex: args.display,
                 initialConfig: initialConfig
             )
@@ -346,12 +359,14 @@ struct HostCLI {
 
     struct Args {
         var port: UInt16 = 5000
+        var inputPort: UInt16? = nil
         var width: Int = 1920
         var height: Int = 1080
         var fps: Int = 60
         var bitrate: Int = 20_000_000
         var codec: String = "h264"
         var keyframeInterval: Int = 30  // 0.5s GOP at 60fps - lower burst loss on LAN
+        var maxPacketSize: Int = 1400
         var display: Int = 0
         var latencyMarker: Bool = false
         var native: Bool = false
@@ -368,6 +383,8 @@ struct HostCLI {
             switch arguments[i] {
             case "-p", "--port":
                 if i + 1 < arguments.count, let v = UInt16(arguments[i + 1]) { args.port = v; i += 1 }
+            case "--input-port":
+                if i + 1 < arguments.count, let v = UInt16(arguments[i + 1]) { args.inputPort = v; i += 1 }
             case "-w", "--width":
                 if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.width = v; i += 1 }
             case "-h", "--height":
@@ -380,6 +397,8 @@ struct HostCLI {
                 if i + 1 < arguments.count { args.codec = arguments[i + 1]; i += 1 }
             case "-k", "--keyframe":
                 if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.keyframeInterval = v; i += 1 }
+            case "--packet-size", "--mtu":
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.maxPacketSize = v; i += 1 }
             case "-d", "--display":
                 if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.display = v; i += 1 }
             case "--latency-marker":
@@ -406,12 +425,14 @@ struct HostCLI {
 
         Options:
           -p, --port <port>       Port to listen on (default: 5000)
+          --input-port <port>     Port for input events (default: port+1)
           -w, --width <pixels>    Initial stream width (default: 1920)
           -h, --height <pixels>   Initial stream height (default: 1080)
           -f, --fps <fps>         Frames per second (default: 60)
           -b, --bitrate <mbps>    Bitrate in Mbps (default: 20)
           -c, --codec <codec>     h264 or hevc (default: h264)
           -k, --keyframe <frames> Keyframe interval (default: 30)
+          --packet-size <bytes>   Max UDP packet size (default: 1400)
           -d, --display <index>   Display index (default: 0)
           --native                Stream at display's native resolution
           --full-color            Enable 4:4:4 chroma for sharper text (needs ~2x bitrate)

@@ -226,11 +226,16 @@ struct ViewerCLI {
                 codec: args.codec == "hevc" ? .hevc : .h264,
                 bitrate: args.bitrate,
                 keyframeInterval: args.keyframeInterval,
-                lowLatencyMode: true
+                lowLatencyMode: true,
+                maxPacketSize: args.maxPacketSize
             )
 
             // Create UDP client that connects to the host server
-            let client = UDPStreamClient(serverHost: host, serverPort: args.port)
+            let client = UDPStreamClient(
+                serverHost: host,
+                serverPort: args.port,
+                maxPacketSize: args.maxPacketSize
+            )
 
             // Set the config we want from the server
             let requestedConfig = StreamConfigData(
@@ -241,7 +246,8 @@ struct ViewerCLI {
                 bitrate: args.bitrate,
                 keyframeInterval: args.keyframeInterval,
                 fullColorMode: args.fullColor,
-                useNativeResolution: args.native
+                useNativeResolution: args.native,
+                maxPacketSize: args.maxPacketSize
             )
             await client.setRequestedConfig(requestedConfig)
 
@@ -268,6 +274,11 @@ struct ViewerCLI {
 
             // Set up input capture if enabled
             if args.enableInput {
+                // Separate UDP input channel to avoid video congestion
+                let inputPort = args.inputPort ?? args.port + 1
+                let inputClient = UDPInputClient(serverHost: host, serverPort: inputPort)
+                try await inputClient.start()
+
                 // Enable input capture with sender callback
                 inputCaptureView.enableInput { inputEvent in
                     // Log that callback was triggered
@@ -275,12 +286,12 @@ struct ViewerCLI {
                         log("[Viewer] Input callback triggered: \(inputEvent.type)")
                     }
                     Task {
-                        await client.sendInputEvent(inputEvent)
+                        await inputClient.sendInputEvent(inputEvent)
                     }
                 }
 
                 // Handle releaseCapture events from host
-                await client.setInputEventHandler { inputEvent in
+                await inputClient.setInputEventHandler { inputEvent in
                     if inputEvent.type == .releaseCapture {
                         CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
                             inputCaptureView.handleReleaseCaptureFromHost()
@@ -376,6 +387,8 @@ struct ViewerCLI {
         var keyframeInterval: Int = 30  // 0.5s GOP at 60fps - lower burst loss on LAN
         var fullColor: Bool = false
         var native: Bool = false
+        var maxPacketSize: Int = 1400
+        var inputPort: UInt16? = nil
     }
 
     static func parseArgs() -> Args {
@@ -416,6 +429,10 @@ struct ViewerCLI {
                 args.fullColor = true
             case "--native":
                 args.native = true
+            case "--packet-size", "--mtu":
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.maxPacketSize = v; i += 1 }
+            case "--input-port":
+                if i + 1 < arguments.count, let v = UInt16(arguments[i + 1]) { args.inputPort = v; i += 1 }
             case "--help":
                 args.help = true
             default:
@@ -450,6 +467,8 @@ struct ViewerCLI {
           -k, --keyframe <frames>  Keyframe interval (default: 30)
           --full-color             Enable 4:4:4 chroma for sharper text
           --native                 Use server's native display resolution
+          --packet-size <bytes>    Max UDP packet size (default: 1400)
+          --input-port <port>      UDP port for input events (default: port+1 when input enabled)
 
         Other Options:
           --enable-input          Enable mouse/keyboard capture and streaming

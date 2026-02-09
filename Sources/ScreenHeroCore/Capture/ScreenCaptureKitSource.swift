@@ -98,8 +98,42 @@ public actor ScreenCaptureKitSource: FrameSource {
     }
 
     private nonisolated func handleSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        // Skip idle/blank frames to reduce unnecessary encoding
+        if !Self.shouldEmitFrame(sampleBuffer: sampleBuffer) {
+            return
+        }
+
         // Direct yield without Task hop - continuation.yield is thread-safe
         continuationRef?.yield(sampleBuffer)
+    }
+
+    /// Determine whether a frame should be emitted based on ScreenCaptureKit metadata.
+    /// Exposed for tests.
+    static func shouldEmitFrame(sampleBuffer: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let info = attachments.first else {
+            return true
+        }
+        return shouldEmitFrame(frameInfo: info)
+    }
+
+    static func shouldEmitFrame(frameInfo: [SCStreamFrameInfo: Any]) -> Bool {
+        if let status = frameInfo[SCStreamFrameInfo.status] as? SCFrameStatus {
+            switch status {
+            case .idle, .blank, .suspended, .stopped:
+                return false
+            case .complete, .started:
+                break
+            @unknown default:
+                break
+            }
+        }
+
+        if let dirtyRects = frameInfo[SCStreamFrameInfo.dirtyRects] as? [NSValue] {
+            return !dirtyRects.isEmpty
+        }
+
+        return true
     }
 
     public func stop() async {
