@@ -16,6 +16,8 @@ public actor ScreenCaptureKitSource: FrameSource {
     private var isRunning = false
     private var streamOutput: StreamOutput?
     private var _frames: AsyncStream<CMSampleBuffer>?
+    // Thread-safe reference for nonisolated callback access
+    private nonisolated(unsafe) var hasEmittedFirstFrame = false
 
     public var frames: AsyncStream<CMSampleBuffer> {
         if let existing = _frames {
@@ -98,26 +100,31 @@ public actor ScreenCaptureKitSource: FrameSource {
     }
 
     private nonisolated func handleSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        // Skip idle/blank frames to reduce unnecessary encoding
-        if !Self.shouldEmitFrame(sampleBuffer: sampleBuffer) {
+        // Skip idle/blank frames to reduce unnecessary encoding.
+        // Allow the first frame even if dirtyRects is empty (some displays report empty on first frame).
+        let allowEmptyDirtyRects = !hasEmittedFirstFrame
+        if !Self.shouldEmitFrame(sampleBuffer: sampleBuffer, allowEmptyDirtyRects: allowEmptyDirtyRects) {
             return
         }
 
         // Direct yield without Task hop - continuation.yield is thread-safe
+        if !hasEmittedFirstFrame {
+            hasEmittedFirstFrame = true
+        }
         continuationRef?.yield(sampleBuffer)
     }
 
     /// Determine whether a frame should be emitted based on ScreenCaptureKit metadata.
     /// Exposed for tests.
-    static func shouldEmitFrame(sampleBuffer: CMSampleBuffer) -> Bool {
+    static func shouldEmitFrame(sampleBuffer: CMSampleBuffer, allowEmptyDirtyRects: Bool = false) -> Bool {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let info = attachments.first else {
             return true
         }
-        return shouldEmitFrame(frameInfo: info)
+        return shouldEmitFrame(frameInfo: info, allowEmptyDirtyRects: allowEmptyDirtyRects)
     }
 
-    static func shouldEmitFrame(frameInfo: [SCStreamFrameInfo: Any]) -> Bool {
+    static func shouldEmitFrame(frameInfo: [SCStreamFrameInfo: Any], allowEmptyDirtyRects: Bool = false) -> Bool {
         if let status = frameInfo[SCStreamFrameInfo.status] as? SCFrameStatus {
             switch status {
             case .idle, .blank, .suspended, .stopped:
@@ -130,7 +137,10 @@ public actor ScreenCaptureKitSource: FrameSource {
         }
 
         if let dirtyRects = frameInfo[SCStreamFrameInfo.dirtyRects] as? [NSValue] {
-            return !dirtyRects.isEmpty
+            if dirtyRects.isEmpty {
+                return allowEmptyDirtyRects
+            }
+            return true
         }
 
         return true
@@ -146,6 +156,7 @@ public actor ScreenCaptureKitSource: FrameSource {
         continuation?.finish()
         continuation = nil
         continuationRef = nil
+        hasEmittedFirstFrame = false
     }
 
     /// Get available displays

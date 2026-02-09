@@ -20,6 +20,14 @@ final class ScreenCaptureKitSourceTests: XCTestCase {
         XCTAssertFalse(ScreenCaptureKitSource.shouldEmitFrame(frameInfo: info))
     }
 
+    func testShouldEmitFrameWithEmptyDirtyRectsWhenAllowed() {
+        let info: [SCStreamFrameInfo: Any] = [
+            SCStreamFrameInfo.status: SCFrameStatus.complete,
+            SCStreamFrameInfo.dirtyRects: [] as [NSValue]
+        ]
+        XCTAssertTrue(ScreenCaptureKitSource.shouldEmitFrame(frameInfo: info, allowEmptyDirtyRects: true))
+    }
+
     func testShouldEmitFrameWithDirtyRects() {
         let rect = NSValue(rect: NSRect(x: 0, y: 0, width: 10, height: 10))
         let info: [SCStreamFrameInfo: Any] = [
