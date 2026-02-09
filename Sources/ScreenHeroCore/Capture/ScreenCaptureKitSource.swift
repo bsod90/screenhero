@@ -18,10 +18,11 @@ public actor ScreenCaptureKitSource: FrameSource {
     private var _frames: AsyncStream<CMSampleBuffer>?
     // Thread-safe reference for nonisolated callback access
     private nonisolated(unsafe) var hasEmittedFirstFrame = false
-    // Stats for dirty rect optimization
-    private nonisolated(unsafe) var framesEmitted: UInt64 = 0
-    private nonisolated(unsafe) var framesSkipped: UInt64 = 0
-    private nonisolated(unsafe) var lastStatsTime: UInt64 = 0
+    // Stats for dirty rect optimization (using lock for thread safety)
+    private nonisolated(unsafe) var statsLock = NSLock()
+    private nonisolated(unsafe) var _framesEmitted: UInt64 = 0
+    private nonisolated(unsafe) var _framesSkipped: UInt64 = 0
+    private nonisolated(unsafe) var _lastStatsTime: UInt64 = 0
 
     public var frames: AsyncStream<CMSampleBuffer> {
         if let existing = _frames {
@@ -108,8 +109,7 @@ public actor ScreenCaptureKitSource: FrameSource {
         // Allow the first frame even if dirtyRects is empty (some displays report empty on first frame).
         let allowEmptyDirtyRects = !hasEmittedFirstFrame
         if !Self.shouldEmitFrame(sampleBuffer: sampleBuffer, allowEmptyDirtyRects: allowEmptyDirtyRects) {
-            framesSkipped += 1
-            logDirtyRectStats()
+            incrementSkipped()
             return
         }
 
@@ -117,20 +117,33 @@ public actor ScreenCaptureKitSource: FrameSource {
         if !hasEmittedFirstFrame {
             hasEmittedFirstFrame = true
         }
-        framesEmitted += 1
-        logDirtyRectStats()
+        incrementEmitted()
         continuationRef?.yield(sampleBuffer)
     }
 
-    private nonisolated func logDirtyRectStats() {
+    private nonisolated func incrementEmitted() {
+        statsLock.lock()
+        _framesEmitted += 1
+        logDirtyRectStatsLocked()
+        statsLock.unlock()
+    }
+
+    private nonisolated func incrementSkipped() {
+        statsLock.lock()
+        _framesSkipped += 1
+        logDirtyRectStatsLocked()
+        statsLock.unlock()
+    }
+
+    private nonisolated func logDirtyRectStatsLocked() {
         let now = DispatchTime.now().uptimeNanoseconds
         // Log every 5 seconds
-        if now - lastStatsTime > 5_000_000_000 {
-            lastStatsTime = now
-            let total = framesEmitted + framesSkipped
+        if now - _lastStatsTime > 5_000_000_000 {
+            _lastStatsTime = now
+            let total = _framesEmitted + _framesSkipped
             if total > 0 {
-                let skipRate = Double(framesSkipped) / Double(total) * 100
-                print("[DirtyRect] Emitted: \(framesEmitted), Skipped: \(framesSkipped) (\(String(format: "%.1f", skipRate))% saved)")
+                let skipRate = Double(_framesSkipped) / Double(total) * 100
+                print("[DirtyRect] Emitted: \(_framesEmitted), Skipped: \(_framesSkipped) (\(String(format: "%.1f", skipRate))% saved)")
             }
         }
     }
@@ -178,6 +191,13 @@ public actor ScreenCaptureKitSource: FrameSource {
         continuation = nil
         continuationRef = nil
         hasEmittedFirstFrame = false
+
+        // Reset stats
+        statsLock.lock()
+        _framesEmitted = 0
+        _framesSkipped = 0
+        _lastStatsTime = 0
+        statsLock.unlock()
     }
 
     /// Get available displays
