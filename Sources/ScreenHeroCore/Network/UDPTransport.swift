@@ -370,6 +370,12 @@ public actor UDPStreamServer: NetworkSender {
     /// Callback for handling received input events
     private var inputEventHandler: ((InputEvent) -> InputEvent?)?
 
+    /// Current stream configuration (can be changed by client)
+    private var currentConfig: StreamConfigData?
+
+    /// Callback for when client requests config change
+    private var configChangeHandler: ((StreamConfigData) async -> Bool)?
+
     public init(port: UInt16, maxPacketSize: Int = 1400) {
         self.port = port
         self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
@@ -378,6 +384,18 @@ public actor UDPStreamServer: NetworkSender {
     /// Set the handler for input events. The handler may return an InputEvent to send back (e.g., releaseCapture)
     public func setInputEventHandler(_ handler: @escaping (InputEvent) -> InputEvent?) {
         inputEventHandler = handler
+    }
+
+    /// Set the current configuration (server reports this to clients)
+    public func setCurrentConfig(_ config: StreamConfigData) {
+        currentConfig = config
+        netLog("[UDPServer] Config updated: \(config.width)x\(config.height) \(config.codec) \(config.bitrate/1_000_000)Mbps k=\(config.keyframeInterval)")
+    }
+
+    /// Set the handler for config change requests from clients
+    /// Handler returns true if config was accepted and applied
+    public func setConfigChangeHandler(_ handler: @escaping (StreamConfigData) async -> Bool) {
+        configChangeHandler = handler
     }
 
     public func start() async throws {
@@ -467,6 +485,16 @@ public actor UDPStreamServer: NetworkSender {
                         netLog("[UDPServer] SUBSCRIBE from \(id)")
                         Task {
                             await self.updateSubscriberLastSeen(id: id)
+                            // Send current config to new subscriber
+                            await self.sendCurrentConfig(to: connection)
+                        }
+                    }
+                }
+                // Check for config message
+                else if ConfigMessage.isConfigMessage(data) {
+                    if let configMsg = ConfigMessage.deserialize(from: data) {
+                        Task {
+                            await self.handleConfigMessage(configMsg, from: connection)
                         }
                     }
                 }
@@ -487,6 +515,47 @@ public actor UDPStreamServer: NetworkSender {
             if error == nil {
                 self.receiveOnConnection(connection)
             }
+        }
+    }
+
+    private func sendCurrentConfig(to connection: NWConnection) {
+        guard let config = currentConfig else { return }
+        let msg = ConfigMessage(type: .response, config: config)
+        let data = msg.serialize()
+        connection.send(content: data, completion: .idempotent)
+        netLog("[UDPServer] Sent config to client: \(config.width)x\(config.height)")
+    }
+
+    private func handleConfigMessage(_ msg: ConfigMessage, from connection: NWConnection) async {
+        switch msg.type {
+        case .request:
+            // Client wants current config
+            sendCurrentConfig(to: connection)
+
+        case .update:
+            // Client wants to change config
+            netLog("[UDPServer] Config change request: \(msg.config.width)x\(msg.config.height) \(msg.config.codec) \(msg.config.bitrate/1_000_000)Mbps k=\(msg.config.keyframeInterval)")
+
+            if let handler = configChangeHandler {
+                let accepted = await handler(msg.config)
+                if accepted {
+                    currentConfig = msg.config
+                    // Send ack with updated config
+                    let ack = ConfigMessage(type: .ack, config: msg.config)
+                    connection.send(content: ack.serialize(), completion: .idempotent)
+                    netLog("[UDPServer] Config change accepted")
+                } else {
+                    // Send current config (unchanged)
+                    if let config = currentConfig {
+                        let response = ConfigMessage(type: .response, config: config)
+                        connection.send(content: response.serialize(), completion: .idempotent)
+                    }
+                    netLog("[UDPServer] Config change rejected")
+                }
+            }
+
+        default:
+            break
         }
     }
 
@@ -587,7 +656,16 @@ public actor UDPStreamClient: NetworkReceiver {
     /// Callback for handling received input events (e.g., releaseCapture from host)
     private var inputEventHandler: ((InputEvent) -> Void)?
 
+    /// Callback for when server sends config
+    private var configHandler: ((StreamConfigData) -> Void)?
+
+    /// Requested config to send on connect
+    private var requestedConfig: StreamConfigData?
+
     public private(set) var isActive = false
+
+    /// Server's current config (received from server)
+    public private(set) var serverConfig: StreamConfigData?
 
     private lazy var _packets: AsyncStream<EncodedPacket> = {
         AsyncStream { continuation in
@@ -609,6 +687,16 @@ public actor UDPStreamClient: NetworkReceiver {
     /// Set the handler for input events received from the server (e.g., releaseCapture)
     public func setInputEventHandler(_ handler: @escaping (InputEvent) -> Void) {
         inputEventHandler = handler
+    }
+
+    /// Set the handler for config updates from server
+    public func setConfigHandler(_ handler: @escaping (StreamConfigData) -> Void) {
+        configHandler = handler
+    }
+
+    /// Set the config to request from server on connect
+    public func setRequestedConfig(_ config: StreamConfigData) {
+        requestedConfig = config
     }
 
     public func start() async throws {
@@ -660,12 +748,16 @@ public actor UDPStreamClient: NetworkReceiver {
         // Send SUBSCRIBE multiple times quickly at startup for reliability
         sendSubscribeMessage()
 
-        // Send a few more times with short delays to ensure server receives at least one
+        // Send config request after first subscribe
         queue.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             Task { await self?.sendSubscribeMessage() }
         }
         queue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            Task { await self?.sendSubscribeMessage() }
+            Task {
+                await self?.sendSubscribeMessage()
+                // Send config update request if we have one
+                await self?.sendConfigRequest()
+            }
         }
         queue.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             Task { await self?.sendSubscribeMessage() }
@@ -683,6 +775,22 @@ public actor UDPStreamClient: NetworkReceiver {
     private func sendSubscribeMessage() {
         guard let data = "SUBSCRIBE".data(using: .utf8) else { return }
         connection?.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    private func sendConfigRequest() {
+        guard let config = requestedConfig, let conn = connection else { return }
+        let msg = ConfigMessage(type: .update, config: config)
+        conn.send(content: msg.serialize(), completion: .idempotent)
+        netLog("[UDPClient] Sent config request: \(config.width)x\(config.height) \(config.codec) \(config.bitrate/1_000_000)Mbps k=\(config.keyframeInterval)")
+    }
+
+    /// Request a config change from server
+    public func requestConfigChange(_ config: StreamConfigData) {
+        guard let conn = connection else { return }
+        requestedConfig = config
+        let msg = ConfigMessage(type: .update, config: config)
+        conn.send(content: msg.serialize(), completion: .idempotent)
+        netLog("[UDPClient] Requested config change: \(config.width)x\(config.height) \(config.codec)")
     }
 
     private func startReceiving() {
@@ -711,7 +819,15 @@ public actor UDPStreamClient: NetworkReceiver {
     }
 
     private func processReceivedData(_ data: Data) async {
-        // First, check if this is an input event (e.g., releaseCapture from host)
+        // First, check if this is a config message
+        if ConfigMessage.isConfigMessage(data) {
+            if let configMsg = ConfigMessage.deserialize(from: data) {
+                handleConfigMessage(configMsg)
+            }
+            return
+        }
+
+        // Check if this is an input event (e.g., releaseCapture from host)
         // InputEvent magic is 0x53484950 ("SHIP") at the start
         if data.count >= 4 {
             let magic = data.withUnsafeBytes { ptr -> UInt32 in
@@ -778,5 +894,20 @@ public actor UDPStreamClient: NetworkReceiver {
         guard isActive, let connection = connection else { return }
         let data = event.serialize()
         connection.send(content: data, completion: .idempotent)
+    }
+
+    private func handleConfigMessage(_ msg: ConfigMessage) {
+        switch msg.type {
+        case .response, .ack:
+            serverConfig = msg.config
+            netLog("[UDPClient] Server config: \(msg.config.width)x\(msg.config.height) \(msg.config.codec) \(msg.config.bitrate/1_000_000)Mbps k=\(msg.config.keyframeInterval)")
+            if let nativeW = msg.config.serverNativeWidth, let nativeH = msg.config.serverNativeHeight {
+                netLog("[UDPClient] Server display: native \(nativeW)x\(nativeH)")
+            }
+            configHandler?(msg.config)
+
+        default:
+            break
+        }
     }
 }

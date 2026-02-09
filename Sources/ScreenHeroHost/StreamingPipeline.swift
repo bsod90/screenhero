@@ -9,6 +9,7 @@ public actor StreamingPipeline {
     private let encoder: any VideoEncoder
     private let sender: any NetworkSender
     private let config: StreamConfig
+    private let manageSenderLifecycle: Bool
 
     private var isRunning = false
     private var streamTask: Task<Void, Never>?
@@ -22,12 +23,14 @@ public actor StreamingPipeline {
         source: any FrameSource,
         encoder: any VideoEncoder,
         sender: any NetworkSender,
-        config: StreamConfig
+        config: StreamConfig,
+        manageSenderLifecycle: Bool = true
     ) {
         self.source = source
         self.encoder = encoder
         self.sender = sender
         self.config = config
+        self.manageSenderLifecycle = manageSenderLifecycle
     }
 
     public func start() async throws {
@@ -38,10 +41,12 @@ public actor StreamingPipeline {
         try await encoder.configure(config)
         netLog("[Pipeline] Encoder configured")
 
-        // Start sender
-        netLog("[Pipeline] Starting sender...")
-        try await sender.start()
-        netLog("[Pipeline] Sender started")
+        // Start sender (only if we manage its lifecycle)
+        if manageSenderLifecycle {
+            netLog("[Pipeline] Starting sender...")
+            try await sender.start()
+            netLog("[Pipeline] Sender started")
+        }
 
         // Start source
         netLog("[Pipeline] Starting capture source...")
@@ -105,7 +110,11 @@ public actor StreamingPipeline {
 
         await source.stop()
         try? await encoder.flush()
-        await sender.stop()
+
+        // Only stop sender if we manage its lifecycle
+        if manageSenderLifecycle {
+            await sender.stop()
+        }
     }
 
     public var statistics: PipelineStatistics {

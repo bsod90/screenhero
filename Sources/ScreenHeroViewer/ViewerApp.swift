@@ -181,6 +181,16 @@ struct ViewerCLI {
         log("ScreenHero Viewer (CLI)")
         log("=======================")
         log("Host: \(host):\(args.port)")
+        log("")
+        log("Requested Stream Config:")
+        log("  Resolution: \(args.streamWidth)x\(args.streamHeight)\(args.native ? " (native)" : "")")
+        log("  FPS: \(args.fps)")
+        log("  Bitrate: \(args.bitrate / 1_000_000) Mbps")
+        log("  Codec: \(args.codec)")
+        log("  Keyframe: \(args.keyframeInterval)")
+        if args.fullColor {
+            log("  Full color: ENABLED (4:4:4 chroma)")
+        }
         if args.measureLatency {
             log("Latency measurement: ENABLED")
         }
@@ -208,18 +218,38 @@ struct ViewerCLI {
         app.activate(ignoringOtherApps: true)
 
         do {
+            // Decoder config (uses stream params from server)
             let config = StreamConfig(
-                width: args.width,
-                height: args.height,
-                fps: 60,
-                codec: .hevc,
-                bitrate: 30_000_000,
-                keyframeInterval: 30,
+                width: args.streamWidth,
+                height: args.streamHeight,
+                fps: args.fps,
+                codec: args.codec == "hevc" ? .hevc : .h264,
+                bitrate: args.bitrate,
+                keyframeInterval: args.keyframeInterval,
                 lowLatencyMode: true
             )
 
             // Create UDP client that connects to the host server
             let client = UDPStreamClient(serverHost: host, serverPort: args.port)
+
+            // Set the config we want from the server
+            let requestedConfig = StreamConfigData(
+                width: args.streamWidth,
+                height: args.streamHeight,
+                fps: args.fps,
+                codec: args.codec,
+                bitrate: args.bitrate,
+                keyframeInterval: args.keyframeInterval,
+                fullColorMode: args.fullColor,
+                useNativeResolution: args.native
+            )
+            await client.setRequestedConfig(requestedConfig)
+
+            // Log when server confirms config
+            await client.setConfigHandler { serverConfig in
+                log("[Config] Server confirmed: \(serverConfig.width)x\(serverConfig.height) \(serverConfig.codec) \(serverConfig.bitrate/1_000_000)Mbps k=\(serverConfig.keyframeInterval)")
+            }
+
             let decoder = VideoToolboxDecoder()
 
             let pipeline = ReceivingPipeline(
@@ -329,6 +359,15 @@ struct ViewerCLI {
         var measureLatency: Bool = false
         var enableInput: Bool = false
         var help: Bool = false
+        // Stream config options (sent to server)
+        var streamWidth: Int = 1280
+        var streamHeight: Int = 720
+        var fps: Int = 60
+        var bitrate: Int = 10_000_000
+        var codec: String = "h264"
+        var keyframeInterval: Int = 3
+        var fullColor: Bool = false
+        var native: Bool = false
     }
 
     static func parseArgs() -> Args {
@@ -343,15 +382,32 @@ struct ViewerCLI {
             case "-p", "--port":
                 if i + 1 < arguments.count, let v = UInt16(arguments[i + 1]) { args.port = v; i += 1 }
             case "-w", "--width":
-                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.width = v; i += 1 }
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.width = v; args.streamWidth = v; i += 1 }
             case "-H", "--height":
-                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.height = v; i += 1 }
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.height = v; args.streamHeight = v; i += 1 }
             case "-f", "--fullscreen":
                 args.fullscreen = true
             case "--measure-latency":
                 args.measureLatency = true
             case "--enable-input":
                 args.enableInput = true
+            // Stream config options
+            case "-sw", "--stream-width":
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.streamWidth = v; i += 1 }
+            case "-sh", "--stream-height":
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.streamHeight = v; i += 1 }
+            case "--fps":
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.fps = v; i += 1 }
+            case "-b", "--bitrate":
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.bitrate = v * 1_000_000; i += 1 }
+            case "-c", "--codec":
+                if i + 1 < arguments.count { args.codec = arguments[i + 1]; i += 1 }
+            case "-k", "--keyframe":
+                if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.keyframeInterval = v; i += 1 }
+            case "--full-color":
+                args.fullColor = true
+            case "--native":
+                args.native = true
             case "--help":
                 args.help = true
             default:
@@ -371,11 +427,23 @@ struct ViewerCLI {
         Required:
           -h, --host <ip>         Host IP address to connect to
 
-        Options:
+        Window Options:
           -p, --port <port>       Port number (default: 5000)
           -w, --width <pixels>    Window width (default: 1920)
           -H, --height <pixels>   Window height (default: 1080)
           -f, --fullscreen        Run in fullscreen mode
+
+        Stream Config (sent to server - controls remote streaming):
+          -sw, --stream-width <px>  Stream width (default: 1280)
+          -sh, --stream-height <px> Stream height (default: 720)
+          --fps <fps>              Frames per second (default: 60)
+          -b, --bitrate <mbps>     Bitrate in Mbps (default: 10)
+          -c, --codec <codec>      h264 or hevc (default: h264)
+          -k, --keyframe <frames>  Keyframe interval (default: 3)
+          --full-color             Enable 4:4:4 chroma for sharper text
+          --native                 Use server's native display resolution
+
+        Other Options:
           --enable-input          Enable mouse/keyboard capture and streaming
           --measure-latency       Enable latency measurement (use with host --latency-marker)
           --help                  Show this help
@@ -386,9 +454,11 @@ struct ViewerCLI {
           - Moving mouse to screen edge on host releases capture
 
         Examples:
-          ScreenHeroViewer -h 192.168.1.100
+          ScreenHeroViewer -h 192.168.1.100                     # 720p default
+          ScreenHeroViewer -h 192.168.1.100 -sw 1920 -sh 1080 -b 20  # 1080p
+          ScreenHeroViewer -h 192.168.1.100 --native -b 30      # Native resolution
           ScreenHeroViewer -h 192.168.1.100 --enable-input
-          ScreenHeroViewer -h 192.168.1.100 -f
+          ScreenHeroViewer -h 192.168.1.100 -f                  # Fullscreen
         """)
     }
 }

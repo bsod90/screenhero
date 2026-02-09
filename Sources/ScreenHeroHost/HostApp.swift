@@ -129,6 +129,146 @@ class LatencyMarkerView: NSView {
     }
 }
 
+/// Manages the streaming session with dynamic reconfiguration support
+@available(macOS 14.0, *)
+actor StreamingSession {
+    private let port: UInt16
+    private let displayIndex: Int
+    private var currentConfig: StreamConfigData
+    private var pipeline: StreamingPipeline?
+    private var server: UDPStreamServer?
+    private var inputHandler: InputEventHandler?
+    private var display: DisplayInfo?
+
+    init(port: UInt16, displayIndex: Int, initialConfig: StreamConfigData) {
+        self.port = port
+        self.displayIndex = displayIndex
+        self.currentConfig = initialConfig
+    }
+
+    func start() async throws {
+        // Get display info
+        let displays = try await ScreenCaptureKitSource.availableDisplays()
+        guard !displays.isEmpty else {
+            throw NSError(domain: "ScreenHero", code: 1, userInfo: [NSLocalizedDescriptionKey: "No displays found"])
+        }
+
+        display = displays[min(displayIndex, displays.count - 1)]
+        guard let display = display else { return }
+
+        log("[Session] Display: \(display.width)x\(display.height) (native: \(display.nativeWidth)x\(display.nativeHeight))")
+
+        // Update config with display info
+        currentConfig.serverDisplayWidth = display.width
+        currentConfig.serverDisplayHeight = display.height
+        currentConfig.serverNativeWidth = display.nativeWidth
+        currentConfig.serverNativeHeight = display.nativeHeight
+
+        // Resolve native resolution if requested
+        if currentConfig.useNativeResolution {
+            currentConfig.width = display.nativeWidth
+            currentConfig.height = display.nativeHeight
+            log("[Session] Using native resolution: \(currentConfig.width)x\(currentConfig.height)")
+        }
+
+        // Create server (keeps running across config changes)
+        server = UDPStreamServer(port: port)
+        inputHandler = InputEventHandler()
+
+        await server?.setInputEventHandler { [inputHandler] inputEvent in
+            return inputHandler?.handleEvent(inputEvent)
+        }
+
+        // Set up config change handler
+        await server?.setConfigChangeHandler { [weak self] newConfig in
+            guard let self = self else { return false }
+            return await self.handleConfigChange(newConfig)
+        }
+
+        // Set current config on server
+        await server?.setCurrentConfig(currentConfig)
+
+        // Start server
+        try await server?.start()
+        log("[Session] Server started on port \(port)")
+
+        // Start streaming with current config
+        try await startPipeline()
+    }
+
+    private func startPipeline() async throws {
+        guard let display = display, let server = server else { return }
+
+        let streamConfig = currentConfig.toStreamConfig()
+
+        log("[Session] Starting pipeline: \(streamConfig.width)x\(streamConfig.height) \(currentConfig.codec) \(streamConfig.bitrate/1_000_000)Mbps k=\(streamConfig.keyframeInterval)")
+
+        let source = ScreenCaptureKitSource(config: streamConfig, displayID: display.displayID)
+        let encoder = VideoToolboxEncoder()
+
+        pipeline = StreamingPipeline(
+            source: source,
+            encoder: encoder,
+            sender: server,
+            config: streamConfig,
+            manageSenderLifecycle: false  // Server is managed by session, not pipeline
+        )
+
+        try await pipeline?.start()
+        log("[Session] Pipeline started")
+    }
+
+    private func stopPipeline() async {
+        await pipeline?.stop()
+        pipeline = nil
+        log("[Session] Pipeline stopped")
+    }
+
+    func handleConfigChange(_ newConfig: StreamConfigData) async -> Bool {
+        log("[Session] Config change requested:")
+        log("[Session]   Resolution: \(newConfig.width)x\(newConfig.height)")
+        log("[Session]   Codec: \(newConfig.codec)")
+        log("[Session]   Bitrate: \(newConfig.bitrate/1_000_000) Mbps")
+        log("[Session]   Keyframe: \(newConfig.keyframeInterval)")
+        log("[Session]   FullColor: \(newConfig.fullColorMode)")
+        log("[Session]   Native: \(newConfig.useNativeResolution)")
+
+        // Stop current pipeline
+        await stopPipeline()
+
+        // Update config
+        var updatedConfig = newConfig
+
+        // Preserve display info
+        updatedConfig.serverDisplayWidth = display?.width
+        updatedConfig.serverDisplayHeight = display?.height
+        updatedConfig.serverNativeWidth = display?.nativeWidth
+        updatedConfig.serverNativeHeight = display?.nativeHeight
+
+        // Handle native resolution
+        if updatedConfig.useNativeResolution, let display = display {
+            updatedConfig.width = display.nativeWidth
+            updatedConfig.height = display.nativeHeight
+            log("[Session] Resolved native resolution: \(updatedConfig.width)x\(updatedConfig.height)")
+        }
+
+        currentConfig = updatedConfig
+
+        // Update server config
+        await server?.setCurrentConfig(currentConfig)
+
+        // Restart pipeline with new config
+        do {
+            try await startPipeline()
+            log("[Session] Config change applied successfully")
+            return true
+        } catch {
+            log("[Session] ERROR: Failed to apply config: \(error)")
+            return false
+        }
+    }
+}
+
 @available(macOS 14.0, *)
 @main
 struct HostCLI {
@@ -140,19 +280,25 @@ struct HostCLI {
             return
         }
 
-        log("ScreenHero Host (CLI)")
-        log("=====================")
+        log("ScreenHero Host (CLI) - Dynamic Config Enabled")
+        log("=============================================")
         log("Port: \(args.port)")
-        log("Resolution: \(args.width)x\(args.height)")
+        log("Initial Resolution: \(args.width)x\(args.height)")
         log("FPS: \(args.fps)")
         log("Bitrate: \(args.bitrate / 1_000_000) Mbps")
         log("Codec: \(args.codec)")
+        log("Keyframe Interval: \(args.keyframeInterval)")
         if args.fullColor {
             log("Full color mode: ENABLED (4:4:4 chroma)")
+        }
+        if args.native {
+            log("Native resolution: ENABLED")
         }
         if args.latencyMarker {
             log("Latency marker: ENABLED")
         }
+        log("")
+        log("Clients can change all settings dynamically!")
         log("")
 
         // Need to initialize NSApplication for screen capture permissions
@@ -168,69 +314,24 @@ struct HostCLI {
         }
 
         do {
-            let config = StreamConfig(
+            let initialConfig = StreamConfigData(
                 width: args.width,
                 height: args.height,
                 fps: args.fps,
-                codec: args.codec == "hevc" ? .hevc : .h264,
+                codec: args.codec,
                 bitrate: args.bitrate,
                 keyframeInterval: args.keyframeInterval,
-                lowLatencyMode: true,
-                fullColorMode: args.fullColor
+                fullColorMode: args.fullColor,
+                useNativeResolution: args.native
             )
 
-            // Get display
-            let displays = try await ScreenCaptureKitSource.availableDisplays()
-            guard !displays.isEmpty else {
-                log("ERROR: No displays found")
-                return
-            }
-
-            let display = displays[min(args.display, displays.count - 1)]
-            log("Display: \(display.width)x\(display.height) (native: \(display.nativeWidth)x\(display.nativeHeight))")
-
-            // Use native resolution if requested
-            let streamWidth = args.native ? display.nativeWidth : args.width
-            let streamHeight = args.native ? display.nativeHeight : args.height
-            if args.native {
-                log("Using native resolution: \(streamWidth)x\(streamHeight)")
-            }
-
-            // Update config with actual resolution
-            let actualConfig = StreamConfig(
-                width: streamWidth,
-                height: streamHeight,
-                fps: config.fps,
-                codec: config.codec,
-                bitrate: config.bitrate,
-                keyframeInterval: config.keyframeInterval,
-                lowLatencyMode: config.lowLatencyMode,
-                fullColorMode: config.fullColorMode
+            let session = StreamingSession(
+                port: args.port,
+                displayIndex: args.display,
+                initialConfig: initialConfig
             )
 
-            // Create components
-            let source = ScreenCaptureKitSource(config: actualConfig, displayID: display.displayID)
-            let encoder = VideoToolboxEncoder()
-            let server = UDPStreamServer(port: args.port)
-
-            // Create input event handler
-            let inputHandler = InputEventHandler()
-
-            // Set up input event handling on the server
-            await server.setInputEventHandler { inputEvent in
-                return inputHandler.handleEvent(inputEvent)
-            }
-
-            let pipeline = StreamingPipeline(
-                source: source,
-                encoder: encoder,
-                sender: server,
-                config: actualConfig
-            )
-
-            log("")
-            log("Starting server on port \(args.port)...")
-            try await pipeline.start()
+            try await session.start()
             log("Streaming! Press Ctrl+C to stop.")
             log("")
 
@@ -299,14 +400,14 @@ struct HostCLI {
 
     static func printHelp() {
         print("""
-        ScreenHero Host - CLI Screen Streaming Server
+        ScreenHero Host - CLI Screen Streaming Server (Dynamic Config)
 
         Usage: ScreenHeroHost [options]
 
         Options:
           -p, --port <port>       Port to listen on (default: 5000)
-          -w, --width <pixels>    Stream width (default: 1920)
-          -h, --height <pixels>   Stream height (default: 1080)
+          -w, --width <pixels>    Initial stream width (default: 1920)
+          -h, --height <pixels>   Initial stream height (default: 1080)
           -f, --fps <fps>         Frames per second (default: 60)
           -b, --bitrate <mbps>    Bitrate in Mbps (default: 20)
           -c, --codec <codec>     h264 or hevc (default: h264)
@@ -317,12 +418,15 @@ struct HostCLI {
           --latency-marker        Show latency measurement marker overlay
           --help                  Show this help
 
+        Dynamic Config:
+          All settings can be changed by the viewer client without restarting.
+          The viewer sends its desired config on connect and can change it anytime.
+
         Examples:
+          ScreenHeroHost -p 5000                      # Start with defaults, client controls config
           ScreenHeroHost -p 5000 -w 1920 -h 1080 -b 20
           ScreenHeroHost --native -b 50 -c hevc
           ScreenHeroHost --full-color -b 40           # Full color mode with higher bitrate
-          ScreenHeroHost -w 2560 -h 1440 -b 30 -c hevc
-          ScreenHeroHost -w 3840 -h 2160 -b 50 -c hevc
         """)
     }
 }
