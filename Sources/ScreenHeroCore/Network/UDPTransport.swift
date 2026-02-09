@@ -682,11 +682,7 @@ public actor UDPStreamClient: NetworkReceiver {
 
     private func sendSubscribeMessage() {
         guard let data = "SUBSCRIBE".data(using: .utf8) else { return }
-        connection?.send(content: data, completion: .contentProcessed { error in
-            if let error = error {
-                netLog("[UDPClient] Subscribe send error: \(error)")
-            }
-        })
+        connection?.send(content: data, completion: .contentProcessed { _ in })
     }
 
     private func startReceiving() {
