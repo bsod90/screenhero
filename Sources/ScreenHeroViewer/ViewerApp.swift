@@ -183,25 +183,65 @@ class VideoDisplayView: NSView {
     private var currentImage: CGImage?
     private let ciContext = CIContext()
 
+    // Debug counters
+    private var displayCallCount: UInt64 = 0
+    private var cgImageSuccessCount: UInt64 = 0
+    private var cgImageFailCount: UInt64 = 0
+    private var drawCallCount: UInt64 = 0
+
     override var isFlipped: Bool { true }
 
     func displayPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
+        displayCallCount += 1
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+
+        if displayCallCount == 1 || displayCallCount % 60 == 0 {
+            log("[Display] displayPixelBuffer called #\(displayCallCount): \(width)x\(height)")
+        }
+
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         if let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) {
+            cgImageSuccessCount += 1
             currentImage = cgImage
-            needsDisplay = true
+
+            if cgImageSuccessCount == 1 {
+                log("[Display] First CGImage created successfully: \(cgImage.width)x\(cgImage.height)")
+            }
+
+            // Force immediate redraw instead of relying on needsDisplay
+            display()
+        } else {
+            cgImageFailCount += 1
+            if cgImageFailCount == 1 || cgImageFailCount % 10 == 0 {
+                log("[Display] CGImage creation FAILED #\(cgImageFailCount)")
+            }
         }
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        drawCallCount += 1
+
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            log("[Display] draw() #\(drawCallCount): No graphics context!")
+            return
+        }
 
         // Fill with black
         context.setFillColor(NSColor.black.cgColor)
         context.fill(bounds)
 
         // Draw image
-        guard let image = currentImage else { return }
+        guard let image = currentImage else {
+            if drawCallCount <= 5 {
+                log("[Display] draw() #\(drawCallCount): No image yet")
+            }
+            return
+        }
+
+        if drawCallCount == 1 || drawCallCount % 60 == 0 {
+            log("[Display] draw() #\(drawCallCount): Drawing image \(image.width)x\(image.height)")
+        }
 
         let imageSize = CGSize(width: image.width, height: image.height)
         let viewSize = bounds.size
