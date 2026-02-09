@@ -7,10 +7,10 @@ import ScreenHeroCore
 public class InputEventHandler {
     // MARK: - Properties
 
-    /// Screen bounds for edge detection
+    /// Screen bounds for edge detection (in CoreGraphics coordinates - origin at top-left)
     private let screenBounds: CGRect
 
-    /// Current virtual mouse position
+    /// Current virtual mouse position (in CG coordinates - origin at top-left)
     private var currentPosition: CGPoint
 
     /// Margin from edge to trigger release (pixels)
@@ -19,11 +19,41 @@ public class InputEventHandler {
     /// Callback to send events back to viewer (for releaseCapture)
     private var responseSender: ((InputEvent) -> Void)?
 
+    /// Whether we've logged the first event (to avoid spam)
+    private var hasLoggedFirstEvent = false
+
     // MARK: - Initialization
 
     public init() {
-        screenBounds = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
-        currentPosition = CGPoint(x: screenBounds.midX, y: screenBounds.midY)
+        // Get main display bounds in CoreGraphics coordinates
+        let mainDisplayID = CGMainDisplayID()
+        let displayBounds = CGDisplayBounds(mainDisplayID)
+        screenBounds = displayBounds
+
+        // Start at center of screen
+        currentPosition = CGPoint(x: displayBounds.midX, y: displayBounds.midY)
+
+        print("[InputHandler] Initialized with screen bounds: \(screenBounds)")
+        print("[InputHandler] Starting position: \(currentPosition)")
+
+        // Check accessibility permissions
+        checkAccessibilityPermissions()
+    }
+
+    private func checkAccessibilityPermissions() {
+        let trusted = AXIsProcessTrusted()
+        if trusted {
+            print("[InputHandler] Accessibility permissions: GRANTED")
+        } else {
+            print("[InputHandler] WARNING: Accessibility permissions NOT granted!")
+            print("[InputHandler] Mouse/keyboard injection will NOT work.")
+            print("[InputHandler] Please grant accessibility permissions in:")
+            print("[InputHandler]   System Settings → Privacy & Security → Accessibility")
+
+            // Prompt for permissions
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+            AXIsProcessTrustedWithOptions(options as CFDictionary)
+        }
     }
 
     /// Set the callback for sending responses back to viewer
@@ -78,15 +108,16 @@ public class InputEventHandler {
 
     private func handleMouseMove(deltaX: Float, deltaY: Float) -> InputEvent? {
         // Update position with delta
+        // deltaX positive = right, deltaY positive = down (matches CG coordinate system)
         currentPosition.x += CGFloat(deltaX)
         currentPosition.y += CGFloat(deltaY)
 
-        // Check if cursor hit screen edge
+        // Check if cursor hit screen edge (before clamping)
         let hitEdge = checkEdgeHit()
 
         // Clamp to screen bounds
-        currentPosition.x = max(0, min(screenBounds.width - 1, currentPosition.x))
-        currentPosition.y = max(0, min(screenBounds.height - 1, currentPosition.y))
+        currentPosition.x = max(screenBounds.minX, min(screenBounds.maxX - 1, currentPosition.x))
+        currentPosition.y = max(screenBounds.minY, min(screenBounds.maxY - 1, currentPosition.y))
 
         // Inject the mouse move
         injectMouseMove(to: currentPosition)
@@ -101,22 +132,23 @@ public class InputEventHandler {
     }
 
     private func checkEdgeHit() -> Bool {
-        return currentPosition.x <= edgeMargin ||
-               currentPosition.x >= screenBounds.width - edgeMargin ||
-               currentPosition.y <= edgeMargin ||
-               currentPosition.y >= screenBounds.height - edgeMargin
+        return currentPosition.x <= screenBounds.minX + edgeMargin ||
+               currentPosition.x >= screenBounds.maxX - edgeMargin ||
+               currentPosition.y <= screenBounds.minY + edgeMargin ||
+               currentPosition.y >= screenBounds.maxY - edgeMargin
     }
 
     private func injectMouseMove(to point: CGPoint) {
-        // Convert to screen coordinates (CoreGraphics uses top-left origin)
-        let cgPoint = CGPoint(x: point.x, y: screenBounds.height - point.y)
-
+        // Point is already in CoreGraphics coordinates (origin at top-left)
         guard let event = CGEvent(
             mouseEventSource: nil,
             mouseType: .mouseMoved,
-            mouseCursorPosition: cgPoint,
+            mouseCursorPosition: point,
             mouseButton: .left
-        ) else { return }
+        ) else {
+            print("[InputHandler] Failed to create mouse move event")
+            return
+        }
 
         event.post(tap: .cghidEventTap)
     }
@@ -126,15 +158,16 @@ public class InputEventHandler {
     private func injectMouseButton(_ event: InputEvent, isDown: Bool) {
         let (mouseType, mouseButton) = getMouseTypeAndButton(event.button, isDown: isDown)
 
-        // Convert to screen coordinates
-        let cgPoint = CGPoint(x: currentPosition.x, y: screenBounds.height - currentPosition.y)
-
+        // currentPosition is already in CoreGraphics coordinates
         guard let cgEvent = CGEvent(
             mouseEventSource: nil,
             mouseType: mouseType,
-            mouseCursorPosition: cgPoint,
+            mouseCursorPosition: currentPosition,
             mouseButton: mouseButton
-        ) else { return }
+        ) else {
+            print("[InputHandler] Failed to create mouse button event")
+            return
+        }
 
         cgEvent.post(tap: .cghidEventTap)
     }

@@ -470,10 +470,16 @@ public actor UDPStreamServer: NetworkSender {
                         }
                     }
                 }
-                // Try to parse as input event
-                else if let inputEvent = InputEvent.deserialize(from: data) {
-                    Task {
-                        await self.handleInputEvent(inputEvent, from: connection)
+                // Try to parse as input event (check magic number first)
+                else if data.count >= 4 {
+                    let magic = UInt32(data[data.startIndex]) << 24 |
+                                UInt32(data[data.startIndex + 1]) << 16 |
+                                UInt32(data[data.startIndex + 2]) << 8 |
+                                UInt32(data[data.startIndex + 3])
+                    if magic == InputEvent.magic, let inputEvent = InputEvent.deserialize(from: data) {
+                        Task {
+                            await self.handleInputEvent(inputEvent, from: connection)
+                        }
                     }
                 }
             }
