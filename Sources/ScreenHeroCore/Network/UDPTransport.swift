@@ -524,14 +524,11 @@ public actor UDPStreamServer: NetworkSender {
             netLog("[UDPServer] Sending first frame to \(subscribers.count) subscriber(s), \(fragments.count) fragments")
         }
 
-        for (key, subscriber) in subscribers {
+        for (_, subscriber) in subscribers {
             for fragment in fragments {
                 let data = fragment.serialize()
-                subscriber.connection.send(content: data, completion: .contentProcessed { error in
-                    if let error = error {
-                        netLog("[UDPServer] Send error to \(key): \(error)")
-                    }
-                })
+                // Fire-and-forget for low latency - don't wait for completion
+                subscriber.connection.send(content: data, completion: .idempotent)
             }
         }
     }

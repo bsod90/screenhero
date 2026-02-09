@@ -11,6 +11,8 @@ public actor ScreenCaptureKitSource: FrameSource {
 
     private var stream: SCStream?
     private var continuation: AsyncStream<CMSampleBuffer>.Continuation?
+    // Thread-safe reference for nonisolated callback access
+    private nonisolated(unsafe) var continuationRef: AsyncStream<CMSampleBuffer>.Continuation?
     private var isRunning = false
     private var streamOutput: StreamOutput?
     private var _frames: AsyncStream<CMSampleBuffer>?
@@ -21,6 +23,7 @@ public actor ScreenCaptureKitSource: FrameSource {
         }
         let stream = AsyncStream<CMSampleBuffer> { continuation in
             self.continuation = continuation
+            self.continuationRef = continuation
         }
         _frames = stream
         return stream
@@ -67,7 +70,8 @@ public actor ScreenCaptureKitSource: FrameSource {
         streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(config.fps))
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA
         streamConfig.showsCursor = true
-        streamConfig.queueDepth = 3
+        // Increased queue depth for 4K to prevent frame drops
+        streamConfig.queueDepth = 6
 
         if #available(macOS 14.0, *) {
             streamConfig.captureResolution = .best
@@ -94,13 +98,8 @@ public actor ScreenCaptureKitSource: FrameSource {
     }
 
     private nonisolated func handleSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        Task {
-            await self.yieldSampleBuffer(sampleBuffer)
-        }
-    }
-
-    private func yieldSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        continuation?.yield(sampleBuffer)
+        // Direct yield without Task hop - continuation.yield is thread-safe
+        continuationRef?.yield(sampleBuffer)
     }
 
     public func stop() async {
@@ -112,6 +111,7 @@ public actor ScreenCaptureKitSource: FrameSource {
         streamOutput = nil
         continuation?.finish()
         continuation = nil
+        continuationRef = nil
     }
 
     /// Get available displays

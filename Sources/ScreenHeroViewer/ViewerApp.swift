@@ -2,11 +2,162 @@ import Foundation
 import ScreenHeroCore
 import AppKit
 import CoreVideo
+import Metal
+import MetalKit
 
 /// Flush stdout to ensure output appears immediately
 func log(_ message: String) {
     print(message)
     fflush(stdout)
+}
+
+/// Detects latency marker in received frames and calculates end-to-end latency
+class LatencyDetector {
+    /// Colors for each 100ms time slot (must match LatencyMarkerWindow)
+    private static let markerColors: [(r: UInt8, g: UInt8, b: UInt8)] = [
+        (255, 0, 0),     // Red
+        (0, 255, 0),     // Green
+        (0, 0, 255),     // Blue
+        (255, 255, 0),   // Yellow
+        (0, 255, 255),   // Cyan
+        (255, 0, 255),   // Magenta
+    ]
+
+    // Statistics
+    private var latencySamples: [UInt64] = []
+    private var lastLogTime: UInt64 = 0
+    private let logIntervalMs: UInt64 = 2000
+
+    /// Detect marker in pixel buffer and calculate latency
+    func detectLatency(in pixelBuffer: CVPixelBuffer) -> UInt64? {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+
+        // Sample center of marker region (top-left 100x100, sample at 50,50)
+        // Marker is positioned at top-left with 10px padding, so sample around (60, 60)
+        let sampleX = 60
+        let sampleY = 60
+
+        guard sampleX < width && sampleY < height else { return nil }
+
+        let ptr = baseAddress.assumingMemoryBound(to: UInt8.self)
+
+        // BGRA format - each pixel is 4 bytes
+        let pixelOffset = sampleY * bytesPerRow + sampleX * 4
+        let b = ptr[pixelOffset]
+        let g = ptr[pixelOffset + 1]
+        let r = ptr[pixelOffset + 2]
+
+        // Match to closest color
+        guard let slot = matchColorToSlot(r: r, g: g, b: b) else { return nil }
+
+        // Calculate latency
+        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        let currentSlot = Int((nowMs / 100) % 6)
+        let offsetInSlot = nowMs % 100
+
+        var slotDiff = currentSlot - slot
+        if slotDiff < 0 { slotDiff += 6 }
+
+        let latencyMs = UInt64(slotDiff) * 100 + offsetInSlot
+        return latencyMs
+    }
+
+    /// Record latency sample and log statistics periodically
+    func recordLatency(_ latencyMs: UInt64) {
+        latencySamples.append(latencyMs)
+
+        // Keep only last 100 samples
+        if latencySamples.count > 100 {
+            latencySamples.removeFirst()
+        }
+
+        // Log statistics every 2 seconds
+        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        if nowMs - lastLogTime >= logIntervalMs {
+            logStatistics()
+            lastLogTime = nowMs
+        }
+    }
+
+    private func logStatistics() {
+        guard !latencySamples.isEmpty else { return }
+
+        let sorted = latencySamples.sorted()
+        let count = sorted.count
+        let min = sorted.first!
+        let max = sorted.last!
+        let avg = sorted.reduce(0, +) / UInt64(count)
+        let p99Index = Int(Double(count) * 0.99)
+        let p99 = sorted[Swift.min(p99Index, count - 1)]
+
+        log("[Latency] min=\(min)ms avg=\(avg)ms p99=\(p99)ms max=\(max)ms (n=\(count))")
+    }
+
+    private func matchColorToSlot(r: UInt8, g: UInt8, b: UInt8) -> Int? {
+        // Simple threshold-based matching
+        let threshold: UInt8 = 128
+
+        let isRed = r > threshold
+        let isGreen = g > threshold
+        let isBlue = b > threshold
+
+        switch (isRed, isGreen, isBlue) {
+        case (true, false, false): return 0  // Red
+        case (false, true, false): return 1  // Green
+        case (false, false, true): return 2  // Blue
+        case (true, true, false): return 3   // Yellow
+        case (false, true, true): return 4   // Cyan
+        case (true, false, true): return 5   // Magenta
+        default: return nil
+        }
+    }
+}
+
+/// Logs network-based latency from capture timestamps
+class NetworkLatencyLogger {
+    private var latencySamples: [UInt64] = []
+    private var lastLogTime: UInt64 = 0
+    private let logIntervalMs: UInt64 = 2000
+
+    func recordLatency(captureTimestamp: UInt64) {
+        guard captureTimestamp > 0 else { return }
+
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let latencyMs = (nowNs - captureTimestamp) / 1_000_000
+
+        latencySamples.append(latencyMs)
+
+        if latencySamples.count > 100 {
+            latencySamples.removeFirst()
+        }
+
+        let nowMs = nowNs / 1_000_000
+        if nowMs - lastLogTime >= logIntervalMs {
+            logStatistics()
+            lastLogTime = nowMs
+        }
+    }
+
+    private func logStatistics() {
+        guard !latencySamples.isEmpty else { return }
+
+        let sorted = latencySamples.sorted()
+        let count = sorted.count
+        let min = sorted.first!
+        let max = sorted.last!
+        let avg = sorted.reduce(0, +) / UInt64(count)
+        let p99Index = Int(Double(count) * 0.99)
+        let p99 = sorted[Swift.min(p99Index, count - 1)]
+
+        log("[Network Latency] min=\(min)ms avg=\(avg)ms p99=\(p99)ms max=\(max)ms (n=\(count))")
+    }
 }
 
 @available(macOS 14.0, *)
@@ -29,6 +180,9 @@ struct ViewerCLI {
         log("ScreenHero Viewer (CLI)")
         log("=======================")
         log("Host: \(host):\(args.port)")
+        if args.measureLatency {
+            log("Latency measurement: ENABLED")
+        }
         log("")
 
         // Initialize NSApplication for window
@@ -37,7 +191,9 @@ struct ViewerCLI {
 
         // Create window for display
         let window = createWindow(width: args.width, height: args.height, fullscreen: args.fullscreen)
-        let displayView = VideoDisplayView(frame: window.contentView!.bounds)
+
+        // Use Metal-based zero-copy rendering for lower latency
+        let displayView = MetalVideoDisplayView(frame: window.contentView!.bounds)
         displayView.autoresizingMask = [.width, .height]
         window.contentView?.addSubview(displayView)
         window.makeKeyAndOrderFront(nil)
@@ -70,6 +226,22 @@ struct ViewerCLI {
                     displayView.displayPixelBuffer(pixelBuffer)
                 }
                 CFRunLoopWakeUp(CFRunLoopGetMain())
+            }
+
+            // Set up latency measurement if enabled
+            let visualLatencyDetector = args.measureLatency ? LatencyDetector() : nil
+            let networkLatencyLogger = args.measureLatency ? NetworkLatencyLogger() : nil
+
+            if args.measureLatency {
+                await pipeline.setFrameHandlerWithTimestamp { pixelBuffer, captureTimestamp in
+                    // Log network-based latency
+                    networkLatencyLogger?.recordLatency(captureTimestamp: captureTimestamp)
+
+                    // Detect visual marker latency
+                    if let latencyMs = visualLatencyDetector?.detectLatency(in: pixelBuffer) {
+                        visualLatencyDetector?.recordLatency(latencyMs)
+                    }
+                }
             }
 
             log("Connecting to \(host):\(args.port)...")
@@ -125,6 +297,7 @@ struct ViewerCLI {
         var width: Int = 1920
         var height: Int = 1080
         var fullscreen: Bool = false
+        var measureLatency: Bool = false
         var help: Bool = false
     }
 
@@ -145,6 +318,8 @@ struct ViewerCLI {
                 if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.height = v; i += 1 }
             case "-f", "--fullscreen":
                 args.fullscreen = true
+            case "--measure-latency":
+                args.measureLatency = true
             case "--help":
                 args.help = true
             default:
@@ -169,6 +344,7 @@ struct ViewerCLI {
           -w, --width <pixels>    Window width (default: 1920)
           -H, --height <pixels>   Window height (default: 1080)
           -f, --fullscreen        Run in fullscreen mode
+          --measure-latency       Enable latency measurement (use with host --latency-marker)
           --help                  Show this help
 
         Examples:
@@ -246,6 +422,12 @@ class VideoDisplayView: NSView {
             drawRect = CGRect(x: (viewSize.width - width) / 2, y: 0, width: width, height: viewSize.height)
         }
 
+        // Fix vertical flip: isFlipped=true puts origin at top-left, but CGContext.draw()
+        // expects origin at bottom-left. Apply vertical flip transform.
+        context.saveGState()
+        context.translateBy(x: 0, y: bounds.height)
+        context.scaleBy(x: 1, y: -1)
         context.draw(image, in: drawRect)
+        context.restoreGState()
     }
 }

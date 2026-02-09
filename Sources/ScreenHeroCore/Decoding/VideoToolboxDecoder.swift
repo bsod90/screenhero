@@ -7,12 +7,11 @@ public actor VideoToolboxDecoder: VideoDecoder {
     private var decompressionSession: VTDecompressionSession?
     private var formatDescription: CMFormatDescription?
     private var config: StreamConfig?
-    private var pendingDecodes: [UInt64: PendingDecode] = [:]
     private var decodeCounter: UInt64 = 0
 
-    private struct PendingDecode {
-        let continuation: CheckedContinuation<CVPixelBuffer, Error>
-    }
+    // Thread-safe continuation storage for callback optimization (avoids Task hop)
+    private let continuationLock = NSLock()
+    private var continuationStorage: [UInt64: CheckedContinuation<CVPixelBuffer, Error>] = [:]
 
     public init() {}
 
@@ -59,7 +58,10 @@ public actor VideoToolboxDecoder: VideoDecoder {
         decodeCounter += 1
 
         return try await withCheckedThrowingContinuation { continuation in
-            self.pendingDecodes[currentDecodeId] = PendingDecode(continuation: continuation)
+            // Store continuation in thread-safe storage for direct callback access
+            self.continuationLock.lock()
+            self.continuationStorage[currentDecodeId] = continuation
+            self.continuationLock.unlock()
 
             var infoFlags = VTDecodeInfoFlags()
             let decodeFlags: VTDecodeFrameFlags = [._EnableAsynchronousDecompression, ._EnableTemporalProcessing]
@@ -72,46 +74,34 @@ public actor VideoToolboxDecoder: VideoDecoder {
             ) { [weak self] status, flags, imageBuffer, pts, duration in
                 guard let self = self else { return }
 
-                Task {
-                    await self.handleDecodedFrame(
-                        status: status,
-                        imageBuffer: imageBuffer,
-                        decodeId: currentDecodeId
-                    )
+                // Resume continuation directly without Task hop
+                self.continuationLock.lock()
+                guard let cont = self.continuationStorage.removeValue(forKey: currentDecodeId) else {
+                    self.continuationLock.unlock()
+                    return
                 }
+                self.continuationLock.unlock()
+
+                if status != noErr {
+                    cont.resume(throwing: VideoDecoderError.decodingFailed("Decode callback error: \(status)"))
+                    return
+                }
+
+                guard let pixelBuffer = imageBuffer else {
+                    cont.resume(throwing: VideoDecoderError.decodingFailed("No image buffer in callback"))
+                    return
+                }
+
+                cont.resume(returning: pixelBuffer)
             }
 
             if status != noErr {
-                self.pendingDecodes.removeValue(forKey: currentDecodeId)
+                self.continuationLock.lock()
+                self.continuationStorage.removeValue(forKey: currentDecodeId)
+                self.continuationLock.unlock()
                 continuation.resume(throwing: VideoDecoderError.decodingFailed("VTDecompressionSessionDecodeFrame failed: \(status)"))
             }
         }
-    }
-
-    private func handleDecodedFrame(
-        status: OSStatus,
-        imageBuffer: CVImageBuffer?,
-        decodeId: UInt64
-    ) async {
-        guard let pending = pendingDecodes.removeValue(forKey: decodeId) else {
-            return
-        }
-
-        if status != noErr {
-            pending.continuation.resume(
-                throwing: VideoDecoderError.decodingFailed("Decode callback error: \(status)")
-            )
-            return
-        }
-
-        guard let pixelBuffer = imageBuffer else {
-            pending.continuation.resume(
-                throwing: VideoDecoderError.decodingFailed("No image buffer in callback")
-            )
-            return
-        }
-
-        pending.continuation.resume(returning: pixelBuffer)
     }
 
     private func updateFormatDescription(from parameterSets: Data, codec: VideoCodec, width: Int, height: Int) throws {
@@ -215,9 +205,11 @@ public actor VideoToolboxDecoder: VideoDecoder {
     }
 
     private func createDecompressionSession(formatDescription: CMFormatDescription) throws {
+        // IOSurface properties enable zero-copy Metal texture creation
         let destinationAttributes: CFDictionary = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
         ] as CFDictionary
 
         var session: VTDecompressionSession?

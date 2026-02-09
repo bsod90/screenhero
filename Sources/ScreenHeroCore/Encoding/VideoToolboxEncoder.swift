@@ -8,13 +8,11 @@ public actor VideoToolboxEncoder: VideoEncoder {
     public private(set) var config: StreamConfig?
     private var compressionSession: VTCompressionSession?
     private var frameCount: UInt64 = 0
-    private var pendingFrames: [UInt64: PendingFrame] = [:]
     private var formatDescription: CMFormatDescription?
 
-    private struct PendingFrame {
-        let captureTimestamp: UInt64
-        let continuation: CheckedContinuation<EncodedPacket, Error>
-    }
+    // Thread-safe continuation storage for callback optimization (avoids Task hop)
+    private let continuationLock = NSLock()
+    private var continuationStorage: [UInt64: (captureTimestamp: UInt64, continuation: CheckedContinuation<EncodedPacket, Error>)] = [:]
 
     public init() {}
 
@@ -191,11 +189,10 @@ public actor VideoToolboxEncoder: VideoEncoder {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            // Store pending frame info
-            self.pendingFrames[currentFrameId] = PendingFrame(
-                captureTimestamp: captureTimestamp,
-                continuation: continuation
-            )
+            // Store in thread-safe storage for direct callback access
+            self.continuationLock.lock()
+            self.continuationStorage[currentFrameId] = (captureTimestamp, continuation)
+            self.continuationLock.unlock()
 
             var infoFlags = VTEncodeInfoFlags()
 
@@ -209,56 +206,46 @@ public actor VideoToolboxEncoder: VideoEncoder {
             ) { [weak self] status, flags, sampleBuffer in
                 guard let self = self else { return }
 
-                Task {
-                    await self.handleEncodedFrame(
-                        status: status,
-                        flags: flags,
-                        sampleBuffer: sampleBuffer,
-                        frameId: currentFrameId
+                // Resume continuation directly without Task hop
+                self.continuationLock.lock()
+                guard let pending = self.continuationStorage.removeValue(forKey: currentFrameId) else {
+                    self.continuationLock.unlock()
+                    return
+                }
+                self.continuationLock.unlock()
+
+                if status != noErr {
+                    pending.continuation.resume(
+                        throwing: VideoEncoderError.encodingFailed("Encoding callback error: \(status)")
                     )
+                    return
+                }
+
+                guard let sampleBuffer = sampleBuffer else {
+                    pending.continuation.resume(
+                        throwing: VideoEncoderError.encodingFailed("No sample buffer in callback")
+                    )
+                    return
+                }
+
+                do {
+                    let packet = try self.createEncodedPacketSync(
+                        from: sampleBuffer,
+                        frameId: currentFrameId,
+                        captureTimestamp: pending.captureTimestamp
+                    )
+                    pending.continuation.resume(returning: packet)
+                } catch {
+                    pending.continuation.resume(throwing: error)
                 }
             }
 
             if encodeStatus != noErr {
-                self.pendingFrames.removeValue(forKey: currentFrameId)
+                self.continuationLock.lock()
+                self.continuationStorage.removeValue(forKey: currentFrameId)
+                self.continuationLock.unlock()
                 continuation.resume(throwing: VideoEncoderError.encodingFailed("VTCompressionSessionEncodeFrame failed: \(encodeStatus)"))
             }
-        }
-    }
-
-    private func handleEncodedFrame(
-        status: OSStatus,
-        flags: VTEncodeInfoFlags,
-        sampleBuffer: CMSampleBuffer?,
-        frameId: UInt64
-    ) async {
-        guard let pendingFrame = pendingFrames.removeValue(forKey: frameId) else {
-            return
-        }
-
-        if status != noErr {
-            pendingFrame.continuation.resume(
-                throwing: VideoEncoderError.encodingFailed("Encoding callback error: \(status)")
-            )
-            return
-        }
-
-        guard let sampleBuffer = sampleBuffer else {
-            pendingFrame.continuation.resume(
-                throwing: VideoEncoderError.encodingFailed("No sample buffer in callback")
-            )
-            return
-        }
-
-        do {
-            let packet = try createEncodedPacket(
-                from: sampleBuffer,
-                frameId: frameId,
-                captureTimestamp: pendingFrame.captureTimestamp
-            )
-            pendingFrame.continuation.resume(returning: packet)
-        } catch {
-            pendingFrame.continuation.resume(throwing: error)
         }
     }
 
@@ -267,10 +254,15 @@ public actor VideoToolboxEncoder: VideoEncoder {
         frameId: UInt64,
         captureTimestamp: UInt64
     ) throws -> EncodedPacket {
-        guard let config = config else {
-            throw VideoEncoderError.notConfigured
-        }
+        try createEncodedPacketSync(from: sampleBuffer, frameId: frameId, captureTimestamp: captureTimestamp)
+    }
 
+    /// Synchronous version for callback use - nonisolated to avoid actor hops
+    private nonisolated func createEncodedPacketSync(
+        from sampleBuffer: CMSampleBuffer,
+        frameId: UInt64,
+        captureTimestamp: UInt64
+    ) throws -> EncodedPacket {
         // Get encoded data
         guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
             throw VideoEncoderError.encodingFailed("No data buffer")
@@ -301,9 +293,22 @@ public actor VideoToolboxEncoder: VideoEncoder {
 
         // Extract parameter sets for keyframes
         var parameterSets: Data? = nil
-        if isKeyframe {
-            if let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) {
-                parameterSets = extractParameterSets(from: formatDesc, codec: config.codec)
+        let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer)
+        var codec: VideoCodec = .hevc
+        var width = 1920
+        var height = 1080
+
+        if let formatDesc = formatDesc {
+            let dimensions = CMVideoFormatDescriptionGetDimensions(formatDesc)
+            width = Int(dimensions.width)
+            height = Int(dimensions.height)
+
+            // Determine codec from format description
+            let codecType = CMFormatDescriptionGetMediaSubType(formatDesc)
+            codec = codecType == kCMVideoCodecType_H264 ? .h264 : .hevc
+
+            if isKeyframe {
+                parameterSets = extractParameterSetsSync(from: formatDesc, codec: codec)
             }
         }
 
@@ -315,16 +320,24 @@ public actor VideoToolboxEncoder: VideoEncoder {
             data: data,
             presentationTimeNs: ptsNs,
             isKeyframe: isKeyframe,
-            codec: config.codec,
-            width: config.width,
-            height: config.height,
+            codec: codec,
+            width: width,
+            height: height,
             captureTimestamp: captureTimestamp,
             encodeTimestamp: DispatchTime.now().uptimeNanoseconds,
             parameterSets: parameterSets
         )
     }
 
+    private nonisolated func extractParameterSetsSync(from formatDescription: CMFormatDescription, codec: VideoCodec) -> Data? {
+        extractParameterSetsImpl(from: formatDescription, codec: codec)
+    }
+
     private func extractParameterSets(from formatDescription: CMFormatDescription, codec: VideoCodec) -> Data? {
+        extractParameterSetsImpl(from: formatDescription, codec: codec)
+    }
+
+    private nonisolated func extractParameterSetsImpl(from formatDescription: CMFormatDescription, codec: VideoCodec) -> Data? {
         var data = Data()
 
         switch codec {
@@ -395,7 +408,7 @@ public actor VideoToolboxEncoder: VideoEncoder {
     }
 
     private func createPassthroughPacket(from sampleBuffer: CMSampleBuffer) throws -> EncodedPacket {
-        guard let config = config else {
+        guard config != nil else {
             throw VideoEncoderError.notConfigured
         }
 

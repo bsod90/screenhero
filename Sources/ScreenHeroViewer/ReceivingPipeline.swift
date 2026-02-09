@@ -12,6 +12,7 @@ public actor ReceivingPipeline {
     private var receiveTask: Task<Void, Never>?
     private var jitterBuffer: JitterBuffer
     private var frameHandler: (@Sendable (CVPixelBuffer) async -> Void)?
+    private var frameWithTimestampHandler: (@Sendable (CVPixelBuffer, UInt64) async -> Void)?
 
     // Statistics
     public private(set) var framesReceived: UInt64 = 0
@@ -31,6 +32,11 @@ public actor ReceivingPipeline {
     /// Set frame handler callback
     public func setFrameHandler(_ handler: @escaping @Sendable (CVPixelBuffer) async -> Void) {
         self.frameHandler = handler
+    }
+
+    /// Set frame handler callback with capture timestamp for latency measurement
+    public func setFrameHandlerWithTimestamp(_ handler: @escaping @Sendable (CVPixelBuffer, UInt64) async -> Void) {
+        self.frameWithTimestampHandler = handler
     }
 
     public func start() async throws {
@@ -85,8 +91,9 @@ public actor ReceivingPipeline {
                     netLog("[Pipeline] Frames: \(framesReceived), Data: \(String(format: "%.1f", Double(bytesReceived) / 1_000_000))MB")
                 }
 
-                // Call frame handler
+                // Call frame handlers
                 await frameHandler?(pixelBuffer)
+                await frameWithTimestampHandler?(pixelBuffer, packet.captureTimestamp)
 
             } catch VideoDecoderError.waitingForKeyframe {
                 // Silently wait for keyframe

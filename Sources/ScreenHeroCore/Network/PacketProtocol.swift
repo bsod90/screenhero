@@ -6,8 +6,8 @@ public struct PacketProtocol: Sendable {
     public let maxPacketSize: Int
 
     /// Header size in bytes
-    /// Magic(4) + FrameId(8) + FragmentInfo(4) + Flags(1) + Dimensions(4) + PTS(8) + ParamSetsLen(2) + PayloadLen(2) = 33
-    public static let headerSize = 33
+    /// Magic(4) + FrameId(8) + FragmentInfo(4) + Flags(1) + Dimensions(4) + PTS(8) + CaptureTS(8) + ParamSetsLen(2) + PayloadLen(2) = 41
+    public static let headerSize = 41
 
     public init(maxPacketSize: Int = 1400) {
         self.maxPacketSize = maxPacketSize
@@ -24,7 +24,8 @@ public struct PacketProtocol: Sendable {
         for i in 0..<totalFragments {
             let start = i * payloadMaxSize
             let end = min(start + payloadMaxSize, packet.data.count)
-            let fragmentData = packet.data.subdata(in: start..<end)
+            // Use Data slice (shares backing storage) instead of subdata (copies)
+            let fragmentData = Data(packet.data[start..<end])
 
             let fragment = NetworkPacket(
                 frameId: packet.frameId,
@@ -178,22 +179,20 @@ public struct NetworkPacket: Sendable {
         withUnsafeBytes(of: width.bigEndian) { data.append(contentsOf: $0) }
         withUnsafeBytes(of: height.bigEndian) { data.append(contentsOf: $0) }
 
-        // Timestamps (11 bytes to reach 32)
         // PTS (8 bytes)
         withUnsafeBytes(of: presentationTimeNs.bigEndian) { data.append(contentsOf: $0) }
+
+        // Capture timestamp (8 bytes)
+        withUnsafeBytes(of: captureTimestamp.bigEndian) { data.append(contentsOf: $0) }
 
         // Parameter sets length (2 bytes)
         let paramSetsLength = UInt16(parameterSets?.count ?? 0)
         withUnsafeBytes(of: paramSetsLength.bigEndian) { data.append(contentsOf: $0) }
 
-        // Payload length (2 bytes) - we can compute this but include for validation
+        // Payload length (2 bytes)
         withUnsafeBytes(of: UInt16(payload.count).bigEndian) { data.append(contentsOf: $0) }
 
-        // Capture timestamp (8 bytes) - we need to add this but header is full
-        // Actually recalculating: magic(4) + frameId(8) + frag(4) + flags(1) + dim(4) + pts(8) + paramLen(2) + payloadLen(2) = 33
-        // Let's restructure
-
-        // For now, just append the data
+        // Append parameter sets and payload
         if let paramSets = parameterSets {
             data.append(paramSets)
         }
@@ -268,6 +267,9 @@ public struct NetworkPacket: Sendable {
         // PTS
         let presentationTimeNs = readUInt64()
 
+        // Capture timestamp
+        let captureTimestamp = readUInt64()
+
         // Parameter sets length
         let paramSetsLength = Int(readUInt16())
 
@@ -295,7 +297,7 @@ public struct NetworkPacket: Sendable {
             width: width,
             height: height,
             presentationTimeNs: presentationTimeNs,
-            captureTimestamp: 0, // Not transmitted in current protocol
+            captureTimestamp: captureTimestamp,
             payload: payload,
             parameterSets: parameterSets
         )

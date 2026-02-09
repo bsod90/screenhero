@@ -8,6 +8,118 @@ func log(_ message: String) {
     fflush(stdout)
 }
 
+/// Overlay window that displays a colored marker for latency measurement
+/// The marker cycles through 6 colors every 100ms (600ms total cycle)
+class LatencyMarkerWindow {
+    private let window: NSWindow
+    private let markerView: LatencyMarkerView
+    private var timer: Timer?
+
+    /// Colors for each 100ms time slot (6 colors = 600ms cycle)
+    static let colors: [NSColor] = [
+        NSColor(red: 1, green: 0, blue: 0, alpha: 1),     // 0-99ms: Red
+        NSColor(red: 0, green: 1, blue: 0, alpha: 1),     // 100-199ms: Green
+        NSColor(red: 0, green: 0, blue: 1, alpha: 1),     // 200-299ms: Blue
+        NSColor(red: 1, green: 1, blue: 0, alpha: 1),     // 300-399ms: Yellow
+        NSColor(red: 0, green: 1, blue: 1, alpha: 1),     // 400-499ms: Cyan
+        NSColor(red: 1, green: 0, blue: 1, alpha: 1),     // 500-599ms: Magenta
+    ]
+
+    init() {
+        // Create transparent overlay window at top-left corner
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 120, height: 120),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.level = .floating
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+
+        markerView = LatencyMarkerView(frame: NSRect(x: 10, y: 10, width: 100, height: 100))
+        window.contentView?.addSubview(markerView)
+
+        // Position at top-left of main screen
+        if let screen = NSScreen.main {
+            let screenFrame = screen.frame
+            window.setFrameOrigin(NSPoint(x: screenFrame.minX, y: screenFrame.maxY - 120))
+        }
+    }
+
+    func start() {
+        window.orderFront(nil)
+        updateMarker()
+
+        // Update marker every 16ms (~60fps) for smooth transitions
+        timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] _ in
+            self?.updateMarker()
+        }
+        RunLoop.main.add(timer!, forMode: .common)
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        window.orderOut(nil)
+    }
+
+    private func updateMarker() {
+        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        let slotIndex = Int((nowMs / 100) % 6)
+        markerView.currentColor = Self.colors[slotIndex]
+        markerView.timestampMs = nowMs
+        markerView.needsDisplay = true
+    }
+
+    /// Get the current time slot (0-5) based on current time
+    static func currentSlot() -> Int {
+        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        return Int((nowMs / 100) % 6)
+    }
+
+    /// Decode latency from detected slot and current time
+    static func calculateLatency(detectedSlot: Int) -> UInt64 {
+        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        let currentSlot = Int((nowMs / 100) % 6)
+        let offsetInSlot = nowMs % 100
+
+        var slotDiff = currentSlot - detectedSlot
+        if slotDiff < 0 { slotDiff += 6 }
+
+        return UInt64(slotDiff) * 100 + offsetInSlot
+    }
+}
+
+/// View that displays the latency marker (colored square with timestamp)
+class LatencyMarkerView: NSView {
+    var currentColor: NSColor = .red
+    var timestampMs: UInt64 = 0
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Draw colored square
+        currentColor.setFill()
+        NSBezierPath(rect: bounds).fill()
+
+        // Draw timestamp text for debugging
+        let text = String(format: "%llu", timestampMs % 1000)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .bold),
+            .foregroundColor: NSColor.black
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        let textRect = NSRect(
+            x: (bounds.width - textSize.width) / 2,
+            y: (bounds.height - textSize.height) / 2,
+            width: textSize.width,
+            height: textSize.height
+        )
+        text.draw(in: textRect, withAttributes: attributes)
+    }
+}
+
 @available(macOS 14.0, *)
 @main
 struct HostCLI {
@@ -26,11 +138,22 @@ struct HostCLI {
         log("FPS: \(args.fps)")
         log("Bitrate: \(args.bitrate / 1_000_000) Mbps")
         log("Codec: \(args.codec)")
+        if args.latencyMarker {
+            log("Latency marker: ENABLED")
+        }
         log("")
 
         // Need to initialize NSApplication for screen capture permissions
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+
+        // Start latency marker if requested
+        var latencyMarker: LatencyMarkerWindow?
+        if args.latencyMarker {
+            latencyMarker = LatencyMarkerWindow()
+            latencyMarker?.start()
+            log("Latency marker overlay started")
+        }
 
         do {
             let config = StreamConfig(
@@ -89,6 +212,7 @@ struct HostCLI {
         var codec: String = "h264"
         var keyframeInterval: Int = 30
         var display: Int = 0
+        var latencyMarker: Bool = false
         var help: Bool = false
     }
 
@@ -115,6 +239,8 @@ struct HostCLI {
                 if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.keyframeInterval = v; i += 1 }
             case "-d", "--display":
                 if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.display = v; i += 1 }
+            case "--latency-marker":
+                args.latencyMarker = true
             case "--help":
                 args.help = true
             default:
@@ -140,6 +266,7 @@ struct HostCLI {
           -c, --codec <codec>     h264 or hevc (default: h264)
           -k, --keyframe <frames> Keyframe interval (default: 30)
           -d, --display <index>   Display index (default: 0)
+          --latency-marker        Show latency measurement marker overlay
           --help                  Show this help
 
         Examples:
