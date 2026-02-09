@@ -924,6 +924,8 @@ public actor UDPStreamClient: NetworkReceiver {
     private var lastLossRateForAdjust: Double = 0
     private var originalBitrate: Int = 0
     private var currentBitrate: Int = 0
+    private var originalKeyframeInterval: Int = 0
+    private var currentKeyframeInterval: Int = 0
     private let bitrateAdjustIntervalNs: UInt64 = 3_000_000_000  // 3 seconds
     private let lossThresholdHigh: Double = 0.10  // 10% loss = reduce bitrate
     private let lossThresholdLow: Double = 0.02   // 2% loss = increase bitrate
@@ -1042,6 +1044,8 @@ public actor UDPStreamClient: NetworkReceiver {
         if originalBitrate == 0 {
             originalBitrate = config.bitrate
             currentBitrate = config.bitrate
+            originalKeyframeInterval = config.keyframeInterval
+            currentKeyframeInterval = config.keyframeInterval
         }
 
         lastBitrateAdjustTime = nowNs
@@ -1056,25 +1060,39 @@ public actor UDPStreamClient: NetworkReceiver {
         fecRecoveredFrames = 0
         fecUnrecoverableFrames = 0
 
-        // Adjust bitrate based on loss
+        // Adjust bitrate and keyframe interval based on loss
         var newBitrate = currentBitrate
+        var newKeyframeInterval = currentKeyframeInterval
+        var configChanged = false
 
         if lossRate > lossThresholdHigh {
             // High loss - reduce bitrate by 25%
             newBitrate = max(5_000_000, Int(Double(currentBitrate) * 0.75))
-            if newBitrate != currentBitrate {
-                netLog("[AdaptiveBitrate] Loss rate \(String(format: "%.1f", lossRate * 100))%% - reducing bitrate: \(currentBitrate/1_000_000)Mbps -> \(newBitrate/1_000_000)Mbps")
+            // Also reduce keyframe interval to repair artifacts faster (minimum 10 frames = ~0.16s at 60fps)
+            newKeyframeInterval = max(10, currentKeyframeInterval / 2)
+
+            if newBitrate != currentBitrate || newKeyframeInterval != currentKeyframeInterval {
+                netLog("[AdaptiveBitrate] Loss \(String(format: "%.1f", lossRate * 100))%% - bitrate: \(currentBitrate/1_000_000)->\(newBitrate/1_000_000)Mbps, keyframe: \(currentKeyframeInterval)->\(newKeyframeInterval)")
+                configChanged = true
             }
-        } else if lossRate < lossThresholdLow && currentBitrate < originalBitrate {
-            // Low loss and below original - increase bitrate by 10%
-            newBitrate = min(originalBitrate, Int(Double(currentBitrate) * 1.10))
-            if newBitrate != currentBitrate {
-                netLog("[AdaptiveBitrate] Loss rate \(String(format: "%.1f", lossRate * 100))%% - increasing bitrate: \(currentBitrate/1_000_000)Mbps -> \(newBitrate/1_000_000)Mbps")
+        } else if lossRate < lossThresholdLow {
+            // Low loss - try to increase back towards original
+            if currentBitrate < originalBitrate {
+                newBitrate = min(originalBitrate, Int(Double(currentBitrate) * 1.10))
+            }
+            if currentKeyframeInterval < originalKeyframeInterval {
+                newKeyframeInterval = min(originalKeyframeInterval, currentKeyframeInterval + 5)
+            }
+
+            if newBitrate != currentBitrate || newKeyframeInterval != currentKeyframeInterval {
+                netLog("[AdaptiveBitrate] Loss \(String(format: "%.1f", lossRate * 100))%% - bitrate: \(currentBitrate/1_000_000)->\(newBitrate/1_000_000)Mbps, keyframe: \(currentKeyframeInterval)->\(newKeyframeInterval)")
+                configChanged = true
             }
         }
 
-        if newBitrate != currentBitrate {
+        if configChanged {
             currentBitrate = newBitrate
+            currentKeyframeInterval = newKeyframeInterval
 
             // Request new config from server
             let newConfig = StreamConfigData(
@@ -1083,7 +1101,7 @@ public actor UDPStreamClient: NetworkReceiver {
                 fps: config.fps,
                 codec: config.codec,
                 bitrate: newBitrate,
-                keyframeInterval: config.keyframeInterval,
+                keyframeInterval: newKeyframeInterval,
                 fullColorMode: config.fullColorMode,
                 useNativeResolution: config.useNativeResolution,
                 maxPacketSize: config.maxPacketSize
