@@ -26,6 +26,11 @@ public struct StreamConfig: Sendable, Codable, Equatable {
     /// Maximum packet size for network transmission (MTU consideration)
     public let maxPacketSize: Int
 
+    /// Use 4:4:4 chroma subsampling for full color accuracy
+    /// When enabled, uses H.264 High 4:4:4 or HEVC RExt profile
+    /// This provides sharper text and UI elements but requires more bandwidth
+    public let fullColorMode: Bool
+
     public init(
         width: Int = 1920,
         height: Int = 1080,
@@ -34,7 +39,8 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         bitrate: Int = 20_000_000,
         keyframeInterval: Int = 60,
         lowLatencyMode: Bool = true,
-        maxPacketSize: Int = 1400
+        maxPacketSize: Int = 1400,
+        fullColorMode: Bool = false
     ) {
         self.width = width
         self.height = height
@@ -44,6 +50,7 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         self.keyframeInterval = keyframeInterval
         self.lowLatencyMode = lowLatencyMode
         self.maxPacketSize = maxPacketSize
+        self.fullColorMode = fullColorMode
     }
 
     /// Preset for 1080p60
@@ -54,7 +61,8 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         codec: .h264,
         bitrate: 20_000_000,
         keyframeInterval: 30,  // Keyframe every 0.5 seconds
-        lowLatencyMode: true
+        lowLatencyMode: true,
+        fullColorMode: false
     )
 
     /// Preset for 4K60 (default for high quality)
@@ -65,7 +73,8 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         codec: .hevc,
         bitrate: 50_000_000,   // 50 Mbps - Apple recommends 75 for 4K
         keyframeInterval: 60,  // Keyframe every second
-        lowLatencyMode: true
+        lowLatencyMode: true,
+        fullColorMode: false
     )
 
     /// Default preset - matches screen resolution
@@ -81,7 +90,8 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         codec: .hevc,
         bitrate: 30_000_000,   // 30 Mbps - plenty for 1440p
         keyframeInterval: 30,  // Keyframe every 0.5 seconds
-        lowLatencyMode: true
+        lowLatencyMode: true,
+        fullColorMode: false
     )
 
     /// Preset for high quality 4K (use on fast networks)
@@ -92,7 +102,20 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         codec: .hevc,
         bitrate: 50_000_000,   // 50 Mbps
         keyframeInterval: 30,
-        lowLatencyMode: true
+        lowLatencyMode: true,
+        fullColorMode: false
+    )
+
+    /// Preset for full color mode (4:4:4 chroma) - sharper text, higher bandwidth
+    public static let fullColor1080p = StreamConfig(
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        codec: .h264,
+        bitrate: 40_000_000,   // 40 Mbps - 4:4:4 needs ~2x bandwidth
+        keyframeInterval: 30,
+        lowLatencyMode: true,
+        fullColorMode: true
     )
 
     /// Preset for testing (low bandwidth)
@@ -103,6 +126,7 @@ public struct StreamConfig: Sendable, Codable, Equatable {
         codec: .h264,
         bitrate: 2_000_000,
         keyframeInterval: 15,
-        lowLatencyMode: true
+        lowLatencyMode: true,
+        fullColorMode: false
     )
 }

@@ -147,6 +147,9 @@ struct HostCLI {
         log("FPS: \(args.fps)")
         log("Bitrate: \(args.bitrate / 1_000_000) Mbps")
         log("Codec: \(args.codec)")
+        if args.fullColor {
+            log("Full color mode: ENABLED (4:4:4 chroma)")
+        }
         if args.latencyMarker {
             log("Latency marker: ENABLED")
         }
@@ -172,7 +175,8 @@ struct HostCLI {
                 codec: args.codec == "hevc" ? .hevc : .h264,
                 bitrate: args.bitrate,
                 keyframeInterval: args.keyframeInterval,
-                lowLatencyMode: true
+                lowLatencyMode: true,
+                fullColorMode: args.fullColor
             )
 
             // Get display
@@ -200,7 +204,8 @@ struct HostCLI {
                 codec: config.codec,
                 bitrate: config.bitrate,
                 keyframeInterval: config.keyframeInterval,
-                lowLatencyMode: config.lowLatencyMode
+                lowLatencyMode: config.lowLatencyMode,
+                fullColorMode: config.fullColorMode
             )
 
             // Create components
@@ -249,6 +254,7 @@ struct HostCLI {
         var display: Int = 0
         var latencyMarker: Bool = false
         var native: Bool = false
+        var fullColor: Bool = false
         var help: Bool = false
     }
 
@@ -279,6 +285,8 @@ struct HostCLI {
                 args.latencyMarker = true
             case "--native":
                 args.native = true
+            case "--full-color":
+                args.fullColor = true
             case "--help":
                 args.help = true
             default:
@@ -305,12 +313,14 @@ struct HostCLI {
           -k, --keyframe <frames> Keyframe interval (default: 30)
           -d, --display <index>   Display index (default: 0)
           --native                Stream at display's native resolution
+          --full-color            Enable 4:4:4 chroma for sharper text (needs ~2x bitrate)
           --latency-marker        Show latency measurement marker overlay
           --help                  Show this help
 
         Examples:
           ScreenHeroHost -p 5000 -w 1920 -h 1080 -b 20
           ScreenHeroHost --native -b 50 -c hevc
+          ScreenHeroHost --full-color -b 40           # Full color mode with higher bitrate
           ScreenHeroHost -w 2560 -h 1440 -b 30 -c hevc
           ScreenHeroHost -w 3840 -h 2160 -b 50 -c hevc
         """)

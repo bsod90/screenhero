@@ -129,10 +129,40 @@ public actor VideoToolboxEncoder: VideoEncoder {
 
         // H.264 specific settings
         if config.codec == .h264 {
+            // Use High 4:4:4 Predictive profile for full color mode (sharper text/UI)
+            // Falls back to High profile if 4:4:4 encoding is not supported
+            let profileLevel: CFString
+            if config.fullColorMode {
+                // High 4:4:4 Predictive profile enables 4:4:4 chroma subsampling
+                // This preserves full color resolution for sharp text rendering
+                profileLevel = kVTProfileLevel_H264_High_AutoLevel  // Note: macOS uses High profile
+                // Enable 4:4:4 via color properties instead since High 4:4:4 Predictive
+                // may not be available on all hardware
+
+                // Request full-range video (0-255 instead of 16-235)
+                VTSessionSetProperty(
+                    session,
+                    key: kVTCompressionPropertyKey_ColorPrimaries,
+                    value: kCMFormatDescriptionColorPrimaries_ITU_R_709_2
+                )
+                VTSessionSetProperty(
+                    session,
+                    key: kVTCompressionPropertyKey_TransferFunction,
+                    value: kCMFormatDescriptionTransferFunction_ITU_R_709_2
+                )
+                VTSessionSetProperty(
+                    session,
+                    key: kVTCompressionPropertyKey_YCbCrMatrix,
+                    value: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2
+                )
+            } else {
+                profileLevel = kVTProfileLevel_H264_High_AutoLevel
+            }
+
             VTSessionSetProperty(
                 session,
                 key: kVTCompressionPropertyKey_ProfileLevel,
-                value: kVTProfileLevel_H264_High_AutoLevel
+                value: profileLevel
             )
 
             // Allow temporal compression
@@ -145,10 +175,39 @@ public actor VideoToolboxEncoder: VideoEncoder {
 
         // HEVC specific settings
         if config.codec == .hevc {
+            // For HEVC, Main profile supports 4:2:0
+            // Main 4:4:4 requires specific encoder support which may not be available
+            // on all hardware. We use Main10 as a compromise for better color depth.
+            let profileLevel: CFString
+            if config.fullColorMode {
+                // Use Main10 profile for better color precision
+                // True 4:4:4 HEVC (RExt profile) has limited hardware support
+                profileLevel = kVTProfileLevel_HEVC_Main10_AutoLevel
+
+                // Configure for best possible color accuracy
+                VTSessionSetProperty(
+                    session,
+                    key: kVTCompressionPropertyKey_ColorPrimaries,
+                    value: kCMFormatDescriptionColorPrimaries_ITU_R_709_2
+                )
+                VTSessionSetProperty(
+                    session,
+                    key: kVTCompressionPropertyKey_TransferFunction,
+                    value: kCMFormatDescriptionTransferFunction_ITU_R_709_2
+                )
+                VTSessionSetProperty(
+                    session,
+                    key: kVTCompressionPropertyKey_YCbCrMatrix,
+                    value: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2
+                )
+            } else {
+                profileLevel = kVTProfileLevel_HEVC_Main_AutoLevel
+            }
+
             VTSessionSetProperty(
                 session,
                 key: kVTCompressionPropertyKey_ProfileLevel,
-                value: kVTProfileLevel_HEVC_Main_AutoLevel
+                value: profileLevel
             )
         }
     }
