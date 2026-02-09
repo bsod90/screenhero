@@ -35,6 +35,15 @@ public class InputEventHandler {
 
     /// Handle an input event and optionally return a response event
     public func handleEvent(_ event: InputEvent) -> InputEvent? {
+        // Debug log
+        if event.type == .mouseMove {
+            if abs(event.x) > 0.1 || abs(event.y) > 0.1 {
+                print("[InputHandler] Received mouseMove: dx=\(event.x), dy=\(event.y)")
+            }
+        } else {
+            print("[InputHandler] Received event: \(event.type)")
+        }
+
         switch event.type {
         case .mouseMove:
             return handleMouseMove(deltaX: event.x, deltaY: event.y)

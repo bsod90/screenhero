@@ -119,10 +119,24 @@ public actor ScreenCaptureKitSource: FrameSource {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
 
         return content.displays.map { display in
-            DisplayInfo(
+            // Get native pixel dimensions from CoreGraphics
+            let nativeWidth: Int
+            let nativeHeight: Int
+            if let mode = CGDisplayCopyDisplayMode(display.displayID) {
+                nativeWidth = mode.pixelWidth
+                nativeHeight = mode.pixelHeight
+            } else {
+                // Fallback: assume 2x scaling for Retina
+                nativeWidth = display.width * 2
+                nativeHeight = display.height * 2
+            }
+
+            return DisplayInfo(
                 displayID: display.displayID,
                 width: display.width,
-                height: display.height
+                height: display.height,
+                nativeWidth: nativeWidth,
+                nativeHeight: nativeHeight
             )
         }
     }
@@ -139,8 +153,14 @@ public enum ScreenCaptureError: Error, Sendable {
 /// Information about an available display
 public struct DisplayInfo: Sendable {
     public let displayID: CGDirectDisplayID
+    /// Logical width in points (for window sizing)
     public let width: Int
+    /// Logical height in points (for window sizing)
     public let height: Int
+    /// Native pixel width (for streaming)
+    public let nativeWidth: Int
+    /// Native pixel height (for streaming)
+    public let nativeHeight: Int
 }
 
 /// Stream output handler for ScreenCaptureKit

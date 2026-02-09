@@ -120,54 +120,34 @@ public struct InputEvent: Sendable {
     public static func deserialize(from data: Data) -> InputEvent? {
         guard data.count >= packetSize else { return nil }
 
-        var offset = 0
-
-        // Read magic
-        let magic = data.withUnsafeBytes { ptr -> UInt32 in
-            ptr.load(fromByteOffset: offset, as: UInt32.self).bigEndian
-        }
+        // Read magic (bytes 0-3)
+        let magic = readUInt32(from: data, at: 0)
         guard magic == Self.magic else { return nil }
-        offset += 4
 
-        // Read type
-        guard let type = EventType(rawValue: data[offset]) else { return nil }
-        offset += 1
+        // Read type (byte 4)
+        guard let type = EventType(rawValue: data[4]) else { return nil }
 
-        // Skip padding
-        offset += 3
+        // Skip padding (bytes 5-7)
 
-        // Read timestamp
-        let timestamp = data.withUnsafeBytes { ptr -> UInt64 in
-            ptr.load(fromByteOffset: offset, as: UInt64.self).bigEndian
-        }
-        offset += 8
+        // Read timestamp (bytes 8-15)
+        let timestamp = readUInt64(from: data, at: 8)
 
-        // Read X
-        let xBits = data.withUnsafeBytes { ptr -> UInt32 in
-            ptr.load(fromByteOffset: offset, as: UInt32.self).bigEndian
-        }
+        // Read X (bytes 16-19)
+        let xBits = readUInt32(from: data, at: 16)
         let x = Float(bitPattern: xBits)
-        offset += 4
 
-        // Read Y
-        let yBits = data.withUnsafeBytes { ptr -> UInt32 in
-            ptr.load(fromByteOffset: offset, as: UInt32.self).bigEndian
-        }
+        // Read Y (bytes 20-23)
+        let yBits = readUInt32(from: data, at: 20)
         let y = Float(bitPattern: yBits)
-        offset += 4
 
-        // Read button
-        let button = MouseButton(rawValue: data[offset]) ?? .none
-        offset += 1
+        // Read button (byte 24)
+        let button = MouseButton(rawValue: data[24]) ?? .none
 
-        // Read keyCode
-        let keyCode = data.withUnsafeBytes { ptr -> UInt16 in
-            ptr.load(fromByteOffset: offset, as: UInt16.self).bigEndian
-        }
-        offset += 2
+        // Read keyCode (bytes 25-26)
+        let keyCode = readUInt16(from: data, at: 25)
 
-        // Read modifiers
-        let modifiers = Modifiers(rawValue: data[offset])
+        // Read modifiers (byte 27)
+        let modifiers = Modifiers(rawValue: data[27])
 
         return InputEvent(
             type: type,
@@ -178,6 +158,29 @@ public struct InputEvent: Sendable {
             keyCode: keyCode,
             modifiers: modifiers
         )
+    }
+
+    // Helper functions to read values without alignment issues
+    private static func readUInt16(from data: Data, at offset: Int) -> UInt16 {
+        return UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
+    }
+
+    private static func readUInt32(from data: Data, at offset: Int) -> UInt32 {
+        return UInt32(data[offset]) << 24 |
+               UInt32(data[offset + 1]) << 16 |
+               UInt32(data[offset + 2]) << 8 |
+               UInt32(data[offset + 3])
+    }
+
+    private static func readUInt64(from data: Data, at offset: Int) -> UInt64 {
+        return UInt64(data[offset]) << 56 |
+               UInt64(data[offset + 1]) << 48 |
+               UInt64(data[offset + 2]) << 40 |
+               UInt64(data[offset + 3]) << 32 |
+               UInt64(data[offset + 4]) << 24 |
+               UInt64(data[offset + 5]) << 16 |
+               UInt64(data[offset + 6]) << 8 |
+               UInt64(data[offset + 7])
     }
 }
 

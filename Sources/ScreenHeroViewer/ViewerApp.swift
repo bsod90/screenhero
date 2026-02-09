@@ -310,6 +310,7 @@ struct ViewerCLI {
         window.center()
         window.isReleasedWhenClosed = false
         window.backgroundColor = .black
+        window.acceptsMouseMovedEvents = true  // Required for mouse capture
 
         if fullscreen {
             window.level = .mainMenu + 1

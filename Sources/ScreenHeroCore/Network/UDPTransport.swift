@@ -651,10 +651,23 @@ public actor UDPStreamClient: NetworkReceiver {
     }
 
     private func startSubscribing() {
+        // Send SUBSCRIBE multiple times quickly at startup for reliability
         sendSubscribeMessage()
 
+        // Send a few more times with short delays to ensure server receives at least one
+        queue.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            Task { await self?.sendSubscribeMessage() }
+        }
+        queue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            Task { await self?.sendSubscribeMessage() }
+        }
+        queue.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            Task { await self?.sendSubscribeMessage() }
+        }
+
+        // Then keep sending periodically to maintain subscription
         subscribeTimer = DispatchSource.makeTimerSource(queue: queue)
-        subscribeTimer?.schedule(deadline: .now() + 1, repeating: 2.0)
+        subscribeTimer?.schedule(deadline: .now() + 0.5, repeating: 2.0)
         subscribeTimer?.setEventHandler { [weak self] in
             Task { await self?.sendSubscribeMessage() }
         }

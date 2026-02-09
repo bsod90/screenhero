@@ -73,6 +73,7 @@ public class InputCaptureView: NSView {
     public func enableInput(sender: @escaping (InputEvent) -> Void) {
         inputEnabled = true
         inputSender = sender
+        print("[InputCapture] Input capture enabled - click inside window to capture mouse")
     }
 
     /// Disable input capture
@@ -179,6 +180,8 @@ public class InputCaptureView: NSView {
     // MARK: - Mouse Events
 
     public override func mouseDown(with event: NSEvent) {
+        print("[InputCapture] mouseDown: isCaptured=\(isCaptured), inputEnabled=\(inputEnabled)")
+
         // If not captured and input enabled, capture on click
         if !isCaptured && inputEnabled {
             captureMouse()
@@ -234,6 +237,10 @@ public class InputCaptureView: NSView {
         // Use delta values for relative mouse movement
         let deltaX = Float(event.deltaX)
         let deltaY = Float(event.deltaY)
+
+        if abs(deltaX) > 0.1 || abs(deltaY) > 0.1 {
+            print("[InputCapture] mouseMoved: dx=\(deltaX), dy=\(deltaY)")
+        }
 
         let inputEvent = InputEvent.mouseMove(deltaX: deltaX, deltaY: deltaY)
         inputSender?(inputEvent)

@@ -183,11 +183,11 @@ struct HostCLI {
             }
 
             let display = displays[min(args.display, displays.count - 1)]
-            log("Display: \(display.width)x\(display.height)")
+            log("Display: \(display.width)x\(display.height) (native: \(display.nativeWidth)x\(display.nativeHeight))")
 
             // Use native resolution if requested
-            let streamWidth = args.native ? display.width : args.width
-            let streamHeight = args.native ? display.height : args.height
+            let streamWidth = args.native ? display.nativeWidth : args.width
+            let streamHeight = args.native ? display.nativeHeight : args.height
             if args.native {
                 log("Using native resolution: \(streamWidth)x\(streamHeight)")
             }
