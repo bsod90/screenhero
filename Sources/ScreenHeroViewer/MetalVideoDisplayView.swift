@@ -14,8 +14,10 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
     private var pipelineState: MTLRenderPipelineState?
     private var textureCache: CVMetalTextureCache?
 
-    // Current frame texture
+    // Current frame texture and dimensions
     private var currentTexture: MTLTexture?
+    private var textureWidth: Int = 0
+    private var textureHeight: Int = 0
     private let textureLock = NSLock()
 
     // Debug counters
@@ -100,17 +102,23 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
     private func createPipelineWithEmbeddedShaders() {
         guard let device = self.device else { return }
 
-        // Embedded shader source for fallback
+        // Embedded shader source for fallback with aspect-ratio support
         let shaderSource = """
         #include <metal_stdlib>
         using namespace metal;
+
+        struct Uniforms {
+            float viewAspect;
+            float textureAspect;
+        };
 
         struct VertexOut {
             float4 position [[position]];
             float2 texCoord;
         };
 
-        vertex VertexOut videoVertexShader(uint vertexID [[vertex_id]]) {
+        vertex VertexOut videoVertexShader(uint vertexID [[vertex_id]],
+                                            constant Uniforms& uniforms [[buffer(0)]]) {
             float2 positions[4] = {
                 float2(-1.0, -1.0),
                 float2( 1.0, -1.0),
@@ -123,8 +131,22 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
                 float2(0.0, 0.0),
                 float2(1.0, 0.0)
             };
+
+            float2 pos = positions[vertexID];
+
+            // Calculate scale for aspect-fit rendering
+            if (uniforms.textureAspect > uniforms.viewAspect) {
+                // Wider video than view - letterbox (black bars top/bottom)
+                float scale = uniforms.viewAspect / uniforms.textureAspect;
+                pos.y *= scale;
+            } else {
+                // Taller video than view - pillarbox (black bars left/right)
+                float scale = uniforms.textureAspect / uniforms.viewAspect;
+                pos.x *= scale;
+            }
+
             VertexOut out;
-            out.position = float4(positions[vertexID], 0.0, 1.0);
+            out.position = float4(pos, 0.0, 1.0);
             out.texCoord = texCoords[vertexID];
             return out;
         }
@@ -210,9 +232,11 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
             print("[MetalVideoDisplayView] First frame displayed via Metal: \(width)x\(height)")
         }
 
-        // Update current texture thread-safely
+        // Update current texture and dimensions thread-safely
         textureLock.lock()
         currentTexture = metalTexture
+        textureWidth = width
+        textureHeight = height
         textureLock.unlock()
 
         // Trigger immediate draw
@@ -235,9 +259,11 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
             return
         }
 
-        // Get current texture
+        // Get current texture and dimensions
         textureLock.lock()
         let texture = currentTexture
+        let texWidth = textureWidth
+        let texHeight = textureHeight
         textureLock.unlock()
 
         guard let videoTexture = texture else {
@@ -262,6 +288,19 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
 
         encoder.setRenderPipelineState(pipelineState)
         encoder.setFragmentTexture(videoTexture, index: 0)
+
+        // Calculate aspect ratios for uniform buffer
+        let viewSize = self.drawableSize
+        let viewAspect: Float = viewSize.width > 0 && viewSize.height > 0
+            ? Float(viewSize.width / viewSize.height)
+            : 1.0
+        let textureAspect: Float = texWidth > 0 && texHeight > 0
+            ? Float(texWidth) / Float(texHeight)
+            : 1.0
+
+        // Pass uniforms to vertex shader
+        var uniforms = (viewAspect: viewAspect, textureAspect: textureAspect)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout.size(ofValue: uniforms), index: 0)
 
         // Draw fullscreen quad using triangle strip (4 vertices)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)

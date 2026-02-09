@@ -184,6 +184,9 @@ struct ViewerCLI {
         if args.measureLatency {
             log("Latency measurement: ENABLED")
         }
+        if args.enableInput {
+            log("Input capture: ENABLED (click to capture, Escape to release)")
+        }
         log("")
 
         // Initialize NSApplication for window
@@ -194,10 +197,14 @@ struct ViewerCLI {
         let window = createWindow(width: args.width, height: args.height, fullscreen: args.fullscreen)
 
         // Use Metal-based zero-copy rendering for lower latency
-        let displayView = MetalVideoDisplayView(frame: window.contentView!.bounds)
-        displayView.autoresizingMask = [.width, .height]
-        window.contentView?.addSubview(displayView)
+        let metalView = MetalVideoDisplayView(frame: window.contentView!.bounds)
+
+        // Create input capture view (wraps the metal view)
+        let inputCaptureView = InputCaptureView(frame: window.contentView!.bounds, videoView: metalView)
+        inputCaptureView.autoresizingMask = [.width, .height]
+        window.contentView?.addSubview(inputCaptureView)
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(inputCaptureView)
         app.activate(ignoringOtherApps: true)
 
         do {
@@ -224,9 +231,29 @@ struct ViewerCLI {
             // Set up frame handler using CFRunLoopPerformBlock for guaranteed execution with app.run()
             await pipeline.setFrameHandler { pixelBuffer in
                 CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
-                    displayView.displayPixelBuffer(pixelBuffer)
+                    inputCaptureView.displayPixelBuffer(pixelBuffer)
                 }
                 CFRunLoopWakeUp(CFRunLoopGetMain())
+            }
+
+            // Set up input capture if enabled
+            if args.enableInput {
+                // Enable input capture with sender callback
+                inputCaptureView.enableInput { inputEvent in
+                    Task {
+                        await client.sendInputEvent(inputEvent)
+                    }
+                }
+
+                // Handle releaseCapture events from host
+                await client.setInputEventHandler { inputEvent in
+                    if inputEvent.type == .releaseCapture {
+                        CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                            inputCaptureView.handleReleaseCaptureFromHost()
+                        }
+                        CFRunLoopWakeUp(CFRunLoopGetMain())
+                    }
+                }
             }
 
             // Set up latency measurement if enabled
@@ -299,6 +326,7 @@ struct ViewerCLI {
         var height: Int = 1080
         var fullscreen: Bool = false
         var measureLatency: Bool = false
+        var enableInput: Bool = false
         var help: Bool = false
     }
 
@@ -321,6 +349,8 @@ struct ViewerCLI {
                 args.fullscreen = true
             case "--measure-latency":
                 args.measureLatency = true
+            case "--enable-input":
+                args.enableInput = true
             case "--help":
                 args.help = true
             default:
@@ -345,12 +375,18 @@ struct ViewerCLI {
           -w, --width <pixels>    Window width (default: 1920)
           -H, --height <pixels>   Window height (default: 1080)
           -f, --fullscreen        Run in fullscreen mode
+          --enable-input          Enable mouse/keyboard capture and streaming
           --measure-latency       Enable latency measurement (use with host --latency-marker)
           --help                  Show this help
 
+        Input Capture (when --enable-input is used):
+          - Click inside window to capture mouse
+          - Press Escape to release mouse (always works)
+          - Moving mouse to screen edge on host releases capture
+
         Examples:
           ScreenHeroViewer -h 192.168.1.100
-          ScreenHeroViewer -h 192.168.1.100 -p 5000
+          ScreenHeroViewer -h 192.168.1.100 --enable-input
           ScreenHeroViewer -h 192.168.1.100 -f
         """)
     }

@@ -185,16 +185,42 @@ struct HostCLI {
             let display = displays[min(args.display, displays.count - 1)]
             log("Display: \(display.width)x\(display.height)")
 
+            // Use native resolution if requested
+            let streamWidth = args.native ? display.width : args.width
+            let streamHeight = args.native ? display.height : args.height
+            if args.native {
+                log("Using native resolution: \(streamWidth)x\(streamHeight)")
+            }
+
+            // Update config with actual resolution
+            let actualConfig = StreamConfig(
+                width: streamWidth,
+                height: streamHeight,
+                fps: config.fps,
+                codec: config.codec,
+                bitrate: config.bitrate,
+                keyframeInterval: config.keyframeInterval,
+                lowLatencyMode: config.lowLatencyMode
+            )
+
             // Create components
-            let source = ScreenCaptureKitSource(config: config, displayID: display.displayID)
+            let source = ScreenCaptureKitSource(config: actualConfig, displayID: display.displayID)
             let encoder = VideoToolboxEncoder()
             let server = UDPStreamServer(port: args.port)
+
+            // Create input event handler
+            let inputHandler = InputEventHandler()
+
+            // Set up input event handling on the server
+            await server.setInputEventHandler { inputEvent in
+                return inputHandler.handleEvent(inputEvent)
+            }
 
             let pipeline = StreamingPipeline(
                 source: source,
                 encoder: encoder,
                 sender: server,
-                config: config
+                config: actualConfig
             )
 
             log("")
@@ -222,6 +248,7 @@ struct HostCLI {
         var keyframeInterval: Int = 30
         var display: Int = 0
         var latencyMarker: Bool = false
+        var native: Bool = false
         var help: Bool = false
     }
 
@@ -250,6 +277,8 @@ struct HostCLI {
                 if i + 1 < arguments.count, let v = Int(arguments[i + 1]) { args.display = v; i += 1 }
             case "--latency-marker":
                 args.latencyMarker = true
+            case "--native":
+                args.native = true
             case "--help":
                 args.help = true
             default:
@@ -275,11 +304,13 @@ struct HostCLI {
           -c, --codec <codec>     h264 or hevc (default: h264)
           -k, --keyframe <frames> Keyframe interval (default: 30)
           -d, --display <index>   Display index (default: 0)
+          --native                Stream at display's native resolution
           --latency-marker        Show latency measurement marker overlay
           --help                  Show this help
 
         Examples:
           ScreenHeroHost -p 5000 -w 1920 -h 1080 -b 20
+          ScreenHeroHost --native -b 50 -c hevc
           ScreenHeroHost -w 2560 -h 1440 -b 30 -c hevc
           ScreenHeroHost -w 3840 -h 2160 -b 50 -c hevc
         """)

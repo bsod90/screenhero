@@ -367,9 +367,17 @@ public actor UDPStreamServer: NetworkSender {
 
     public private(set) var isActive = false
 
+    /// Callback for handling received input events
+    private var inputEventHandler: ((InputEvent) -> InputEvent?)?
+
     public init(port: UInt16, maxPacketSize: Int = 1400) {
         self.port = port
         self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
+    }
+
+    /// Set the handler for input events. The handler may return an InputEvent to send back (e.g., releaseCapture)
+    public func setInputEventHandler(_ handler: @escaping (InputEvent) -> InputEvent?) {
+        inputEventHandler = handler
     }
 
     public func start() async throws {
@@ -450,8 +458,9 @@ public actor UDPStreamServer: NetworkSender {
         connection.receiveMessage { [weak self] content, _, _, error in
             guard let self = self else { return }
 
-            if let data = content, let message = String(data: data, encoding: .utf8) {
-                if message.hasPrefix("SUBSCRIBE") {
+            if let data = content {
+                // Try to parse as text message first
+                if let message = String(data: data, encoding: .utf8), message.hasPrefix("SUBSCRIBE") {
                     if let endpoint = connection.currentPath?.remoteEndpoint,
                        case .hostPort(let host, let port) = endpoint {
                         let id = "\(host):\(port)"
@@ -461,11 +470,28 @@ public actor UDPStreamServer: NetworkSender {
                         }
                     }
                 }
+                // Try to parse as input event
+                else if let inputEvent = InputEvent.deserialize(from: data) {
+                    Task {
+                        await self.handleInputEvent(inputEvent, from: connection)
+                    }
+                }
             }
 
             if error == nil {
                 self.receiveOnConnection(connection)
             }
+        }
+    }
+
+    private func handleInputEvent(_ event: InputEvent, from connection: NWConnection) {
+        guard let handler = inputEventHandler else { return }
+
+        // Handle the event and get optional response
+        if let response = handler(event) {
+            // Send response back to the client
+            let data = response.serialize()
+            connection.send(content: data, completion: .idempotent)
         }
     }
 
@@ -552,6 +578,9 @@ public actor UDPStreamClient: NetworkReceiver {
     private var pendingFragments: [UInt64: [NetworkPacket]] = [:]
     private var subscribeTimer: DispatchSourceTimer?
 
+    /// Callback for handling received input events (e.g., releaseCapture from host)
+    private var inputEventHandler: ((InputEvent) -> Void)?
+
     public private(set) var isActive = false
 
     private lazy var _packets: AsyncStream<EncodedPacket> = {
@@ -569,6 +598,11 @@ public actor UDPStreamClient: NetworkReceiver {
         self.serverPort = serverPort
         // listenPort is now ignored - we receive on the same connection
         self.packetProtocol = PacketProtocol(maxPacketSize: maxPacketSize)
+    }
+
+    /// Set the handler for input events received from the server (e.g., releaseCapture)
+    public func setInputEventHandler(_ handler: @escaping (InputEvent) -> Void) {
+        inputEventHandler = handler
     }
 
     public func start() async throws {
@@ -662,6 +696,20 @@ public actor UDPStreamClient: NetworkReceiver {
     }
 
     private func processReceivedData(_ data: Data) async {
+        // First, check if this is an input event (e.g., releaseCapture from host)
+        // InputEvent magic is 0x53484950 ("SHIP") at the start
+        if data.count >= 4 {
+            let magic = data.withUnsafeBytes { ptr -> UInt32 in
+                ptr.load(as: UInt32.self).bigEndian
+            }
+            if magic == InputEvent.magic {
+                if let inputEvent = InputEvent.deserialize(from: data) {
+                    inputEventHandler?(inputEvent)
+                }
+                return
+            }
+        }
+
         guard let fragment = NetworkPacket.deserialize(from: data) else {
             return
         }
@@ -704,5 +752,13 @@ public actor UDPStreamClient: NetworkReceiver {
 
     public func getPackets() -> AsyncStream<EncodedPacket> {
         _packets
+    }
+
+    /// Send an input event to the server
+    public func sendInputEvent(_ event: InputEvent) {
+        guard isActive, let connection = connection else { return }
+
+        let data = event.serialize()
+        connection.send(content: data, completion: .idempotent)
     }
 }
