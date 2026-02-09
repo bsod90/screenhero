@@ -68,6 +68,11 @@ public actor StreamingPipeline {
                 // Encode frame
                 let packet = try await encoder.encode(sampleBuffer)
 
+                // Log keyframes
+                if packet.isKeyframe {
+                    netLog("[Pipeline] KEYFRAME frame \(packet.frameId): \(packet.data.count) bytes")
+                }
+
                 // Send packet
                 try await sender.send(packet)
 

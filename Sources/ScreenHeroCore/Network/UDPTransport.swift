@@ -742,6 +742,10 @@ public actor UDPStreamClient: NetworkReceiver {
         if currentCount == totalNeeded {
             if let fragments = pendingFragments[frameId],
                let packet = packetProtocol.reassemble(fragments: fragments) {
+                // Log keyframes
+                if packet.isKeyframe {
+                    netLog("[UDPClient] KEYFRAME received: frame \(frameId), \(packet.data.count) bytes")
+                }
                 continuation?.yield(packet)
             }
             pendingFragments.removeValue(forKey: frameId)
@@ -772,7 +776,6 @@ public actor UDPStreamClient: NetworkReceiver {
     /// Send an input event to the server
     public func sendInputEvent(_ event: InputEvent) {
         guard isActive, let connection = connection else { return }
-
         let data = event.serialize()
         connection.send(content: data, completion: .idempotent)
     }
