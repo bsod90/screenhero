@@ -58,12 +58,11 @@ public actor CursorTracker {
                 lastPosition = currentPosition
                 lastCursorType = currentType
 
-                // Convert to screen coordinates (flip Y for top-left origin)
-                let screenY = screenBounds.height - currentPosition.y
-
+                // Send coordinates as-is (bottom-left origin, same as NSView/CALayer)
+                // NSEvent.mouseLocation and NSView both use bottom-left origin
                 let event = InputEvent.cursorPosition(
                     x: Float(currentPosition.x),
-                    y: Float(screenY),
+                    y: Float(currentPosition.y),
                     cursorType: currentType
                 )
 
