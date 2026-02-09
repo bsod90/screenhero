@@ -402,7 +402,9 @@ public actor UDPStreamServer: NetworkSender {
     private var configChangeHandler: ((StreamConfigData) async -> Bool)?
 
     /// Enable packet pacing to reduce burst loss on LAN
-    private let pacingEnabled: Bool = true
+    /// WARNING: Task.sleep() has ~500μs minimum overhead on macOS, so with 200+ fragments
+    /// per frame, pacing can cause 100ms+ delays. Disabled by default.
+    private let pacingEnabled: Bool = false
 
     public init(port: UInt16, maxPacketSize: Int = 1400) {
         self.port = port
