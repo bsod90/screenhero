@@ -184,6 +184,37 @@ final class PacketProtocolTests: XCTestCase {
         XCTAssertNil(reassembled)
     }
 
+    func testFECRecoversSingleMissingFragmentInBlock() {
+        let payloadSize = 1400 - PacketProtocol.headerSize
+        let originalData = Data(repeating: 0x5A, count: payloadSize * 25) // Ensure multiple FEC blocks
+        let packet = EncodedPacket(
+            frameId: 9,
+            data: originalData,
+            presentationTimeNs: 5000,
+            isKeyframe: true,
+            codec: .h264,
+            width: 1920,
+            height: 1080,
+            captureTimestamp: 4000,
+            encodeTimestamp: 4100
+        )
+
+        let protocolWithFEC = PacketProtocol(maxPacketSize: 1400)
+        var fragments = protocolWithFEC.fragment(packet: packet)
+
+        // Remove one data fragment from the first FEC block (keep parity)
+        if let idx = fragments.firstIndex(where: { !$0.isParity && $0.fecBlockIndex == 0 }) {
+            fragments.remove(at: idx)
+        } else {
+            XCTFail("Expected at least one data fragment in block 0")
+            return
+        }
+
+        let reassembled = protocolWithFEC.reassemble(fragments: fragments)
+        XCTAssertNotNil(reassembled)
+        XCTAssertEqual(reassembled?.data, originalData)
+    }
+
     func testReassembleEmptyFragments() {
         let reassembled = packetProtocol.reassemble(fragments: [])
         XCTAssertNil(reassembled)

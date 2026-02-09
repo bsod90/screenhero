@@ -180,18 +180,23 @@ public class InputCaptureView: NSView {
     // MARK: - Mouse Events
 
     public override func mouseDown(with event: NSEvent) {
-        print("[InputCapture] mouseDown: isCaptured=\(isCaptured), inputEnabled=\(inputEnabled)")
+        print("[InputCapture] mouseDown: isCaptured=\(isCaptured), inputEnabled=\(inputEnabled), hasSender=\(inputSender != nil)")
 
         // If not captured and input enabled, capture on click
         if !isCaptured && inputEnabled {
             captureMouse()
             window?.makeFirstResponder(self)
+            // After capture, send this first click to the host
+            let inputEvent = InputEvent.mouseDown(button: .left)
+            print("[InputCapture] SENDING initial mouseDown after capture")
+            inputSender?(inputEvent)
             return
         }
 
         guard isCaptured && inputEnabled else { return }
 
         let inputEvent = InputEvent.mouseDown(button: .left)
+        print("[InputCapture] SENDING mouseDown")
         inputSender?(inputEvent)
     }
 
@@ -238,12 +243,17 @@ public class InputCaptureView: NSView {
         let deltaX = Float(event.deltaX)
         let deltaY = Float(event.deltaY)
 
-        if abs(deltaX) > 0.1 || abs(deltaY) > 0.1 {
-            print("[InputCapture] mouseMoved: dx=\(deltaX), dy=\(deltaY)")
-        }
+        // Only send and log if there's actual movement
+        guard abs(deltaX) > 0.1 || abs(deltaY) > 0.1 else { return }
 
         let inputEvent = InputEvent.mouseMove(deltaX: deltaX, deltaY: deltaY)
-        inputSender?(inputEvent)
+
+        if inputSender != nil {
+            print("[InputCapture] SENDING mouseMove: dx=\(deltaX), dy=\(deltaY)")
+            inputSender?(inputEvent)
+        } else {
+            print("[InputCapture] ERROR: inputSender is nil!")
+        }
     }
 
     public override func mouseDragged(with event: NSEvent) {

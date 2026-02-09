@@ -56,6 +56,13 @@ public actor ReceivingPipeline {
         }
     }
 
+    // Track the latest decoded frame for display (newer frames replace older ones)
+    private var latestFrame: CVPixelBuffer?
+    private var latestFrameTimestamp: UInt64 = 0
+    private var displayTask: Task<Void, Never>?
+    private var framesDropped: UInt64 = 0
+    private let maxDecodeAgeMs: UInt64 = 120
+
     private func runPipeline() async {
         // Get packets stream based on receiver type
         let packetsStream: AsyncStream<EncodedPacket>
@@ -71,10 +78,25 @@ public actor ReceivingPipeline {
             return
         }
 
-        netLog("[Pipeline] Starting packet processing loop")
+        netLog("[Pipeline] Starting packet processing loop (non-blocking display)")
+
+        // Start display task that consumes latest frame
+        displayTask = Task { [weak self] in
+            await self?.runDisplayLoop()
+        }
 
         for await packet in packetsStream {
             guard isRunning else { break }
+
+            // Drop non-keyframes if we're already too far behind
+            let nowNs = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
+            if packet.captureTimestamp > 0, nowNs > packet.captureTimestamp {
+                let ageMs = (nowNs - packet.captureTimestamp) / 1_000_000
+                if ageMs > maxDecodeAgeMs && !packet.isKeyframe {
+                    framesDropped += 1
+                    continue
+                }
+            }
 
             // Decode immediately - no jitter buffer for lowest latency
             do {
@@ -84,16 +106,20 @@ public actor ReceivingPipeline {
                 framesReceived += 1
                 bytesReceived += UInt64(packet.data.count)
 
+                // Replace latest frame (non-blocking) - older frames are dropped
+                if latestFrame != nil {
+                    framesDropped += 1
+                }
+                latestFrame = pixelBuffer
+                latestFrameTimestamp = packet.captureTimestamp
+
                 // Log first frame and periodically
                 if framesReceived == 1 {
                     netLog("[Pipeline] First frame decoded!")
                 } else if framesReceived % 60 == 0 {
-                    netLog("[Pipeline] Frames: \(framesReceived), Data: \(String(format: "%.1f", Double(bytesReceived) / 1_000_000))MB")
+                    let dropRate = framesDropped > 0 ? Double(framesDropped) / Double(framesReceived) * 100 : 0
+                    netLog("[Pipeline] Frames: \(framesReceived), Dropped: \(framesDropped) (\(String(format: "%.1f", dropRate))%), Data: \(String(format: "%.1f", Double(bytesReceived) / 1_000_000))MB")
                 }
-
-                // Call frame handlers
-                await frameHandler?(pixelBuffer)
-                await frameWithTimestampHandler?(pixelBuffer, packet.captureTimestamp)
 
             } catch VideoDecoderError.waitingForKeyframe {
                 // Silently wait for keyframe
@@ -106,7 +132,29 @@ public actor ReceivingPipeline {
             }
         }
 
+        displayTask?.cancel()
         netLog("[Pipeline] Packet loop ended")
+    }
+
+    /// Separate display loop that runs independently of decode
+    /// Takes the latest frame and displays it, dropping any that arrived while displaying
+    private func runDisplayLoop() async {
+        while isRunning {
+            // Take the latest frame if available
+            guard let frame = latestFrame else {
+                // No frame yet, wait a bit
+                try? await Task.sleep(nanoseconds: 1_000_000)  // 1ms
+                continue
+            }
+            let timestamp = latestFrameTimestamp
+
+            // Clear so we don't redisplay the same frame
+            latestFrame = nil
+
+            // Call frame handlers (this may block on main thread)
+            await frameHandler?(frame)
+            await frameWithTimestampHandler?(frame, timestamp)
+        }
     }
 
 
@@ -114,6 +162,8 @@ public actor ReceivingPipeline {
         isRunning = false
         receiveTask?.cancel()
         receiveTask = nil
+        displayTask?.cancel()
+        displayTask = nil
 
         await receiver.stop()
         try? await decoder.flush()

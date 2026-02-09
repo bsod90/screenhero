@@ -351,7 +351,7 @@ struct HostCLI {
         var fps: Int = 60
         var bitrate: Int = 20_000_000
         var codec: String = "h264"
-        var keyframeInterval: Int = 3  // Very frequent keyframes to survive packet loss
+        var keyframeInterval: Int = 30  // 0.5s GOP at 60fps - lower burst loss on LAN
         var display: Int = 0
         var latencyMarker: Bool = false
         var native: Bool = false
@@ -411,7 +411,7 @@ struct HostCLI {
           -f, --fps <fps>         Frames per second (default: 60)
           -b, --bitrate <mbps>    Bitrate in Mbps (default: 20)
           -c, --codec <codec>     h264 or hevc (default: h264)
-          -k, --keyframe <frames> Keyframe interval (default: 3)
+          -k, --keyframe <frames> Keyframe interval (default: 30)
           -d, --display <index>   Display index (default: 0)
           --native                Stream at display's native resolution
           --full-color            Enable 4:4:4 chroma for sharper text (needs ~2x bitrate)

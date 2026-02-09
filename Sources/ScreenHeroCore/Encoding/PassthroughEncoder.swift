@@ -39,7 +39,7 @@ public actor PassthroughEncoder: VideoEncoder {
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let ptsNs = UInt64(CMTimeGetSeconds(pts) * 1_000_000_000)
-        let captureTimestamp = DispatchTime.now().uptimeNanoseconds
+        let captureTimestamp = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
 
         let currentFrameId = frameCount
         frameCount += 1

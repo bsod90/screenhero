@@ -105,8 +105,13 @@ public actor UDPReceiver: NetworkReceiver {
     private let queue = DispatchQueue(label: "com.screenhero.udpreceiver", qos: .userInteractive)
     private let packetProtocol: PacketProtocol
     private var continuation: AsyncStream<EncodedPacket>.Continuation?
-    private var pendingFragments: [UInt64: [NetworkPacket]] = [:]
-    private let fragmentTimeout: TimeInterval = 0.5
+    private struct PendingFrame {
+        var fragments: [NetworkPacket]
+        var firstSeenNs: UInt64
+        var lastUpdatedNs: UInt64
+    }
+    private var pendingFragments: [UInt64: PendingFrame] = [:]
+    private let fragmentTimeout: TimeInterval = 0.05
 
     public private(set) var isActive = false
 
@@ -266,27 +271,47 @@ public actor UDPReceiver: NetworkReceiver {
         }
 
         let frameId = fragment.frameId
+        let nowNs = DispatchTime.now().uptimeNanoseconds
 
         // Add to pending fragments
         if pendingFragments[frameId] == nil {
-            pendingFragments[frameId] = []
+            pendingFragments[frameId] = PendingFrame(
+                fragments: [],
+                firstSeenNs: nowNs,
+                lastUpdatedNs: nowNs
+            )
         }
-        pendingFragments[frameId]?.append(fragment)
+        pendingFragments[frameId]?.fragments.append(fragment)
+        pendingFragments[frameId]?.lastUpdatedNs = nowNs
 
-        // Check if we have all fragments
-        if let fragments = pendingFragments[frameId],
-           fragments.count == Int(fragment.totalFragments) {
-            if let packet = packetProtocol.reassemble(fragments: fragments) {
+        if let entry = pendingFragments[frameId] {
+            let fragments = entry.fragments
+            let totalNeeded = Int(fragment.totalFragments)
+            let dataNeeded = Int(fragment.dataFragmentCount)
+            let dataCount = fragments.filter { !$0.isParity }.count
+
+            let shouldAttempt = dataCount == dataNeeded || fragments.count >= dataNeeded
+
+            if shouldAttempt, let packet = packetProtocol.reassemble(fragments: fragments) {
                 continuation?.yield(packet)
+                pendingFragments.removeValue(forKey: frameId)
+            } else if fragments.count == totalNeeded {
+                // All fragments arrived but still couldn't reassemble
+                pendingFragments.removeValue(forKey: frameId)
             }
-            pendingFragments.removeValue(forKey: frameId)
         }
 
         // Clean up old fragments
-        cleanupOldFragments()
+        cleanupOldFragments(nowNs: nowNs)
     }
 
-    private func cleanupOldFragments() {
+    private func cleanupOldFragments(nowNs: UInt64) {
+        let timeoutNs = UInt64(fragmentTimeout * 1_000_000_000)
+        let expired = pendingFragments.filter { nowNs - $0.value.firstSeenNs > timeoutNs }
+        for key in expired.keys {
+            pendingFragments.removeValue(forKey: key)
+        }
+
         // Keep only the last 100 frame IDs to prevent memory growth
         if pendingFragments.count > 100 {
             let sortedKeys = pendingFragments.keys.sorted()
@@ -384,6 +409,7 @@ public actor UDPStreamServer: NetworkSender {
     /// Set the handler for input events. The handler may return an InputEvent to send back (e.g., releaseCapture)
     public func setInputEventHandler(_ handler: @escaping (InputEvent) -> InputEvent?) {
         inputEventHandler = handler
+        netLog("[UDPServer] Input event handler SET")
     }
 
     /// Set the current configuration (server reports this to clients)
@@ -472,11 +498,23 @@ public actor UDPStreamServer: NetworkSender {
         connection.start(queue: queue)
     }
 
+    /// Track if we've logged connection info
+    private static var hasLoggedConnectionReceive = false
+
     private nonisolated func receiveOnConnection(_ connection: NWConnection) {
         connection.receiveMessage { [weak self] content, _, _, error in
             guard let self = self else { return }
 
             if let data = content {
+                // Log first few packets to confirm data is arriving
+                if !Self.hasLoggedConnectionReceive {
+                    netLog("[UDPServer] Receiving data from connection, size=\(data.count)")
+                    Self.hasLoggedConnectionReceive = true
+                }
+
+                // Log all received data for debugging (first time only per connection type)
+                let dataPreview = data.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " ")
+
                 // Try to parse as text message first
                 if let message = String(data: data, encoding: .utf8), message.hasPrefix("SUBSCRIBE") {
                     if let endpoint = connection.currentPath?.remoteEndpoint,
@@ -490,7 +528,7 @@ public actor UDPStreamServer: NetworkSender {
                         }
                     }
                 }
-                // Check for config message
+                // Check for config message (magic 0x53484346 = "SHCF")
                 else if ConfigMessage.isConfigMessage(data) {
                     if let configMsg = ConfigMessage.deserialize(from: data) {
                         Task {
@@ -498,22 +536,31 @@ public actor UDPStreamServer: NetworkSender {
                         }
                     }
                 }
-                // Try to parse as input event (check magic number first)
+                // Try to parse as input event (magic 0x53484950 = "SHIP")
                 else if data.count >= 4 {
                     let magic = UInt32(data[data.startIndex]) << 24 |
                                 UInt32(data[data.startIndex + 1]) << 16 |
                                 UInt32(data[data.startIndex + 2]) << 8 |
                                 UInt32(data[data.startIndex + 3])
+
+                    // Debug: log non-video packets
+                    if data.count < 100 {  // Input events are 28 bytes, video fragments are larger
+                        netLog("[UDPServer] Small packet (\(data.count) bytes): magic=\(String(format: "0x%08X", magic)) expected=\(String(format: "0x%08X", InputEvent.magic))")
+                    }
+
                     if magic == InputEvent.magic {
                         if let inputEvent = InputEvent.deserialize(from: data) {
-                            if inputEvent.type != .mouseMove {
-                                netLog("[UDPServer] Received input event: \(inputEvent.type)")
-                            }
+                            netLog("[UDPServer] INPUT RECEIVED: \(inputEvent.type)")
                             Task {
                                 await self.handleInputEvent(inputEvent, from: connection)
                             }
                         } else {
-                            netLog("[UDPServer] Failed to deserialize input event")
+                            netLog("[UDPServer] Failed to deserialize input (data: \(dataPreview))")
+                        }
+                    } else {
+                        // Unknown packet type - only log if small (to avoid video fragment spam)
+                        if data.count < 100 {
+                            netLog("[UDPServer] Unknown packet: \(dataPreview) (magic: \(String(format: "0x%08X", magic)))")
                         }
                     }
                 }
@@ -567,13 +614,19 @@ public actor UDPStreamServer: NetworkSender {
     }
 
     private func handleInputEvent(_ event: InputEvent, from connection: NWConnection) {
-        guard let handler = inputEventHandler else { return }
+        guard let handler = inputEventHandler else {
+            netLog("[UDPServer] ERROR: inputEventHandler is nil! Cannot process input event: \(event.type)")
+            return
+        }
+
+        netLog("[UDPServer] Calling input handler for event: \(event.type)")
 
         // Handle the event and get optional response
         if let response = handler(event) {
             // Send response back to the client
             let data = response.serialize()
             connection.send(content: data, completion: .idempotent)
+            netLog("[UDPServer] Sent response: \(response.type)")
         }
     }
 
@@ -657,7 +710,13 @@ public actor UDPStreamClient: NetworkReceiver {
     private let queue = DispatchQueue(label: "com.screenhero.udpclient", qos: .userInteractive)
     private let packetProtocol: PacketProtocol
     private var continuation: AsyncStream<EncodedPacket>.Continuation?
-    private var pendingFragments: [UInt64: [NetworkPacket]] = [:]
+    private struct PendingFrame {
+        var fragments: [NetworkPacket]
+        var firstSeenNs: UInt64
+        var lastUpdatedNs: UInt64
+    }
+    private var pendingFragments: [UInt64: PendingFrame] = [:]
+    private let fragmentTimeout: TimeInterval = 0.05
     private var subscribeTimer: DispatchSourceTimer?
 
     /// Callback for handling received input events (e.g., releaseCapture from host)
@@ -825,6 +884,11 @@ public actor UDPStreamClient: NetworkReceiver {
         }
     }
 
+    // FEC recovery statistics
+    private var fecRecoveredFrames: UInt64 = 0
+    private var fecUnrecoverableFrames: UInt64 = 0
+    private var lastFecLogTime: UInt64 = 0
+
     private func processReceivedData(_ data: Data) async {
         // First, check if this is a config message
         if ConfigMessage.isConfigMessage(data) {
@@ -853,32 +917,74 @@ public actor UDPStreamClient: NetworkReceiver {
         }
 
         let frameId = fragment.frameId
+        let nowNs = DispatchTime.now().uptimeNanoseconds
 
         if pendingFragments[frameId] == nil {
-            pendingFragments[frameId] = []
+            pendingFragments[frameId] = PendingFrame(
+                fragments: [],
+                firstSeenNs: nowNs,
+                lastUpdatedNs: nowNs
+            )
         }
-        pendingFragments[frameId]?.append(fragment)
+        pendingFragments[frameId]?.fragments.append(fragment)
+        pendingFragments[frameId]?.lastUpdatedNs = nowNs
 
-        let currentCount = pendingFragments[frameId]?.count ?? 0
-        let totalNeeded = Int(fragment.totalFragments)
+        if let entry = pendingFragments[frameId] {
+            let fragments = entry.fragments
+            let currentCount = fragments.count
+            let totalNeeded = Int(fragment.totalFragments)
+            let dataNeeded = Int(fragment.dataFragmentCount)
+            let dataCount = fragments.filter { !$0.isParity }.count
 
-        if currentCount == totalNeeded {
-            if let fragments = pendingFragments[frameId],
-               let packet = packetProtocol.reassemble(fragments: fragments) {
+            // Try to reassemble when we have all data OR enough fragments for FEC recovery
+            let shouldAttempt = dataCount == dataNeeded || currentCount >= dataNeeded
+            let hadAllData = dataCount == dataNeeded
+
+            if shouldAttempt, let packet = packetProtocol.reassemble(fragments: fragments) {
+                // Track FEC recovery: if we didn't have all data but still got a packet, FEC helped
+                if !hadAllData {
+                    fecRecoveredFrames += 1
+                    if fecRecoveredFrames <= 3 {
+                        netLog("[FEC] Recovered frame \(frameId) using parity (total recovered: \(fecRecoveredFrames))")
+                    }
+                }
+
                 // Log keyframes
                 if packet.isKeyframe {
                     netLog("[UDPClient] KEYFRAME received: frame \(frameId), \(packet.data.count) bytes")
                 }
                 continuation?.yield(packet)
+                pendingFragments.removeValue(forKey: frameId)
+            } else if currentCount == totalNeeded {
+                // Reassembly failed even with all fragments
+                fecUnrecoverableFrames += 1
+                pendingFragments.removeValue(forKey: frameId)
             }
-            pendingFragments.removeValue(forKey: frameId)
         }
 
-        // Cleanup old fragments
-        if pendingFragments.count > 100 {
+        // Cleanup old fragments (frames where we never got enough fragments)
+        let timeoutNs = UInt64(fragmentTimeout * 1_000_000_000)
+        let expired = pendingFragments.filter { nowNs - $0.value.firstSeenNs > timeoutNs }
+        for key in expired.keys {
+            pendingFragments.removeValue(forKey: key)
+            fecUnrecoverableFrames += 1
+        }
+
+        // Keep only the last 50 frame IDs to prevent memory growth
+        if pendingFragments.count > 50 {
             let sortedKeys = pendingFragments.keys.sorted()
-            for key in sortedKeys.prefix(pendingFragments.count - 100) {
+            let keysToRemove = sortedKeys.prefix(pendingFragments.count - 50)
+            for key in keysToRemove {
                 pendingFragments.removeValue(forKey: key)
+                fecUnrecoverableFrames += 1
+            }
+        }
+
+        // Periodic FEC stats (every 5 seconds)
+        if nowNs - lastFecLogTime > 5_000_000_000 {
+            lastFecLogTime = nowNs
+            if fecRecoveredFrames > 0 || fecUnrecoverableFrames > 0 {
+                netLog("[FEC Stats] Recovered: \(fecRecoveredFrames) frames, Lost: \(fecUnrecoverableFrames) frames")
             }
         }
     }
@@ -896,6 +1002,9 @@ public actor UDPStreamClient: NetworkReceiver {
         _packets
     }
 
+    /// Track first input send for logging
+    private static var hasLoggedFirstInput = false
+
     /// Send an input event to the server
     public func sendInputEvent(_ event: InputEvent) {
         guard isActive, let connection = connection else {
@@ -903,10 +1012,22 @@ public actor UDPStreamClient: NetworkReceiver {
             return
         }
         let data = event.serialize()
-        if event.type != .mouseMove {
-            netLog("[UDPClient] Sending input event: \(event.type)")
+
+        // Log first input event and all non-move events
+        if !Self.hasLoggedFirstInput {
+            netLog("[UDPClient] First input event: \(event.type), data size=\(data.count), magic=\(String(format: "0x%08X", InputEvent.magic))")
+            let preview = data.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " ")
+            netLog("[UDPClient] Data preview: \(preview)")
+            Self.hasLoggedFirstInput = true
+        } else if event.type != .mouseMove {
+            netLog("[UDPClient] Sending input: \(event.type)")
         }
-        connection.send(content: data, completion: .idempotent)
+
+        connection.send(content: data, completion: .contentProcessed { error in
+            if let error = error {
+                netLog("[UDPClient] Input send error: \(error)")
+            }
+        })
     }
 
     private func handleConfigMessage(_ msg: ConfigMessage) {

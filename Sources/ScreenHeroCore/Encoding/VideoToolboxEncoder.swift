@@ -88,6 +88,17 @@ public actor VideoToolboxEncoder: VideoEncoder {
             value: config.bitrate as CFNumber
         )
 
+        // Limit short-term bitrate spikes to reduce UDP burst loss
+        // DataRateLimits expects [bytesPerSecond, durationSeconds]
+        let bytesPerSecond = max(1, config.bitrate / 8)
+        let burstBytesPerSecond = Int(Double(bytesPerSecond) * 1.25)
+        let dataRateLimits: [Int] = [burstBytesPerSecond, 1]
+        VTSessionSetProperty(
+            session,
+            key: kVTCompressionPropertyKey_DataRateLimits,
+            value: dataRateLimits as CFArray
+        )
+
         // Expected frame rate
         VTSessionSetProperty(
             session,

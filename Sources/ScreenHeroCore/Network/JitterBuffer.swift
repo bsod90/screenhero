@@ -58,7 +58,8 @@ public actor JitterBuffer {
         }
 
         // Calculate delay for adaptive buffering
-        let delay = Int((DispatchTime.now().uptimeNanoseconds - packet.captureTimestamp) / 1_000_000)
+        let nowNs = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
+        let delay = Int((nowNs - packet.captureTimestamp) / 1_000_000)
         updateAdaptiveDepth(delay: delay)
 
         // Check if packet is too old (already output)

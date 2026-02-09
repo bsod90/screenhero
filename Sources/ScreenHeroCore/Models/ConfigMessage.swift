@@ -107,7 +107,7 @@ public struct StreamConfigData: Sendable, Codable {
         fps: Int = 60,
         codec: String = "h264",
         bitrate: Int = 20_000_000,
-        keyframeInterval: Int = 3,
+        keyframeInterval: Int = 30,
         fullColorMode: Bool = false,
         useNativeResolution: Bool = false,
         serverDisplayWidth: Int? = nil,

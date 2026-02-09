@@ -270,6 +270,10 @@ struct ViewerCLI {
             if args.enableInput {
                 // Enable input capture with sender callback
                 inputCaptureView.enableInput { inputEvent in
+                    // Log that callback was triggered
+                    if inputEvent.type != .mouseMove {
+                        log("[Viewer] Input callback triggered: \(inputEvent.type)")
+                    }
                     Task {
                         await client.sendInputEvent(inputEvent)
                     }
@@ -369,7 +373,7 @@ struct ViewerCLI {
         var fps: Int = 60
         var bitrate: Int = 8_000_000  // 8Mbps - good quality, small keyframes
         var codec: String = "h264"
-        var keyframeInterval: Int = 1  // Every frame is keyframe for max reliability
+        var keyframeInterval: Int = 30  // 0.5s GOP at 60fps - lower burst loss on LAN
         var fullColor: Bool = false
         var native: Bool = false
     }
@@ -443,7 +447,7 @@ struct ViewerCLI {
           --fps <fps>              Frames per second (default: 60)
           -b, --bitrate <mbps>     Bitrate in Mbps (default: 8)
           -c, --codec <codec>      h264 or hevc (default: h264)
-          -k, --keyframe <frames>  Keyframe interval, 1=every frame (default: 1)
+          -k, --keyframe <frames>  Keyframe interval (default: 30)
           --full-color             Enable 4:4:4 chroma for sharper text
           --native                 Use server's native display resolution
 

@@ -26,6 +26,15 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
     private var textureCreateSuccessCount: UInt64 = 0
     private var textureCreateFailCount: UInt64 = 0
 
+    // Frame pacing - drop frames if we're falling behind
+    private var lastDrawTime: UInt64 = 0
+    private let minFrameIntervalNs: UInt64 = 8_000_000  // ~120fps max to avoid overwhelming GPU
+    private var droppedFrames: UInt64 = 0
+
+    // Render state tracking - prevent queueing frames while GPU is busy
+    private var isRendering = false
+    private let renderLock = NSLock()
+
     public override init(frame frameRect: CGRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device ?? MTLCreateSystemDefaultDevice())
         commonInit()
@@ -192,6 +201,28 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
     public func displayPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
         displayCallCount += 1
 
+        // Check if GPU is still busy with previous frame - if so, drop this one
+        renderLock.lock()
+        if isRendering {
+            renderLock.unlock()
+            droppedFrames += 1
+            if droppedFrames % 100 == 1 {
+                print("[MetalVideoDisplayView] GPU busy: dropped \(droppedFrames) frames")
+            }
+            return
+        }
+        renderLock.unlock()
+
+        // Frame pacing - drop frames if arriving too fast for GPU to handle
+        let now = DispatchTime.now().uptimeNanoseconds
+        if lastDrawTime > 0 && (now - lastDrawTime) < minFrameIntervalNs {
+            droppedFrames += 1
+            if droppedFrames % 100 == 1 {
+                print("[MetalVideoDisplayView] Frame pacing: dropped \(droppedFrames) frames")
+            }
+            return
+        }
+
         guard let textureCache = textureCache else {
             textureCreateFailCount += 1
             return
@@ -232,6 +263,11 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
             print("[MetalVideoDisplayView] First frame displayed via Metal: \(width)x\(height)")
         }
 
+        // Mark as rendering before updating texture
+        renderLock.lock()
+        isRendering = true
+        renderLock.unlock()
+
         // Update current texture and dimensions thread-safely
         textureLock.lock()
         currentTexture = metalTexture
@@ -256,6 +292,10 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
               let pipelineState = pipelineState,
               let drawable = currentDrawable,
               let renderPassDescriptor = currentRenderPassDescriptor else {
+            // Clear rendering flag if we can't render
+            renderLock.lock()
+            isRendering = false
+            renderLock.unlock()
             return
         }
 
@@ -267,12 +307,21 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
         textureLock.unlock()
 
         guard let videoTexture = texture else {
-            // No frame yet, just clear to black
+            // No frame yet, just clear to black and release render lock
             guard let commandBuffer = commandQueue.makeCommandBuffer(),
                   let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+                renderLock.lock()
+                isRendering = false
+                renderLock.unlock()
                 return
             }
             encoder.endEncoding()
+            commandBuffer.addCompletedHandler { [weak self] _ in
+                guard let self = self else { return }
+                self.renderLock.lock()
+                self.isRendering = false
+                self.renderLock.unlock()
+            }
             commandBuffer.present(drawable)
             commandBuffer.commit()
             return
@@ -307,9 +356,18 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
 
         encoder.endEncoding()
 
-        // Present and commit
+        // Present and commit with completion handler to track render state
         commandBuffer.present(drawable)
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            guard let self = self else { return }
+            self.renderLock.lock()
+            self.isRendering = false
+            self.renderLock.unlock()
+        }
         commandBuffer.commit()
+
+        // Update frame pacing timestamp
+        lastDrawTime = DispatchTime.now().uptimeNanoseconds
     }
 
     deinit {
