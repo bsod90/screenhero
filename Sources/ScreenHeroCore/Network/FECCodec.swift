@@ -28,9 +28,11 @@ public struct FECConfig: Sendable {
         self.enabled = enabled
     }
 
-    /// Default config: 5 data fragments + 1 parity = ~20% overhead
-    /// Smaller blocks handle bursty packet loss better at high bitrates
-    public static let `default` = FECConfig(blockSize: 5, parityCount: 1, enabled: true)
+    /// Default config: 3 data fragments + 1 parity = ~33% overhead
+    /// Very small blocks handle bursty WiFi packet loss better.
+    /// At 200 fragments/frame: ~67 blocks, can recover up to 67 lost fragments
+    /// if distributed across different blocks.
+    public static let `default` = FECConfig(blockSize: 3, parityCount: 1, enabled: true)
 
     /// Disabled FEC
     public static let disabled = FECConfig(enabled: false)

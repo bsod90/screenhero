@@ -7,10 +7,10 @@ final class FECCodecTests: XCTestCase {
 
     func testDefaultConfig() {
         let config = FECConfig.default
-        XCTAssertEqual(config.blockSize, 5)
+        XCTAssertEqual(config.blockSize, 3)
         XCTAssertEqual(config.parityCount, 1)
         XCTAssertTrue(config.enabled)
-        XCTAssertEqual(config.overheadPercent, 20.0) // 1/5 = 20%
+        XCTAssertEqual(config.overheadPercent, 100.0 / 3.0, accuracy: 0.001) // 1/3 = 33.3%
     }
 
     func testDisabledConfig() {

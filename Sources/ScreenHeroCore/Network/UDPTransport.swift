@@ -909,6 +909,16 @@ public actor UDPStreamClient: NetworkReceiver {
     private var fecUnrecoverableFrames: UInt64 = 0
     private var lastFecLogTime: UInt64 = 0
 
+    // Adaptive bitrate state
+    private var adaptiveBitrateEnabled = true
+    private var lastBitrateAdjustTime: UInt64 = 0
+    private var lastLossRateForAdjust: Double = 0
+    private var originalBitrate: Int = 0
+    private var currentBitrate: Int = 0
+    private let bitrateAdjustIntervalNs: UInt64 = 3_000_000_000  // 3 seconds
+    private let lossThresholdHigh: Double = 0.10  // 10% loss = reduce bitrate
+    private let lossThresholdLow: Double = 0.02   // 2% loss = increase bitrate
+
     private func processReceivedData(_ data: Data) async {
         // First, check if this is a config message
         if ConfigMessage.isConfigMessage(data) {
@@ -1006,6 +1016,71 @@ public actor UDPStreamClient: NetworkReceiver {
             if fecRecoveredFrames > 0 || fecUnrecoverableFrames > 0 {
                 netLog("[FEC Stats] Recovered: \(fecRecoveredFrames) frames, Lost: \(fecUnrecoverableFrames) frames")
             }
+        }
+
+        // Adaptive bitrate check (every 3 seconds)
+        await checkAdaptiveBitrate(nowNs: nowNs)
+    }
+
+    private func checkAdaptiveBitrate(nowNs: UInt64) async {
+        guard adaptiveBitrateEnabled,
+              nowNs - lastBitrateAdjustTime > bitrateAdjustIntervalNs,
+              let config = requestedConfig else {
+            return
+        }
+
+        // Initialize tracking on first run
+        if originalBitrate == 0 {
+            originalBitrate = config.bitrate
+            currentBitrate = config.bitrate
+        }
+
+        lastBitrateAdjustTime = nowNs
+
+        // Calculate loss rate
+        let totalFrames = fecRecoveredFrames + fecUnrecoverableFrames
+        guard totalFrames > 30 else { return }  // Need enough samples
+
+        let lossRate = Double(fecUnrecoverableFrames) / Double(totalFrames)
+
+        // Reset stats for next interval
+        fecRecoveredFrames = 0
+        fecUnrecoverableFrames = 0
+
+        // Adjust bitrate based on loss
+        var newBitrate = currentBitrate
+
+        if lossRate > lossThresholdHigh {
+            // High loss - reduce bitrate by 25%
+            newBitrate = max(5_000_000, Int(Double(currentBitrate) * 0.75))
+            if newBitrate != currentBitrate {
+                netLog("[AdaptiveBitrate] Loss rate \(String(format: "%.1f", lossRate * 100))%% - reducing bitrate: \(currentBitrate/1_000_000)Mbps -> \(newBitrate/1_000_000)Mbps")
+            }
+        } else if lossRate < lossThresholdLow && currentBitrate < originalBitrate {
+            // Low loss and below original - increase bitrate by 10%
+            newBitrate = min(originalBitrate, Int(Double(currentBitrate) * 1.10))
+            if newBitrate != currentBitrate {
+                netLog("[AdaptiveBitrate] Loss rate \(String(format: "%.1f", lossRate * 100))%% - increasing bitrate: \(currentBitrate/1_000_000)Mbps -> \(newBitrate/1_000_000)Mbps")
+            }
+        }
+
+        if newBitrate != currentBitrate {
+            currentBitrate = newBitrate
+
+            // Request new config from server
+            let newConfig = StreamConfigData(
+                width: config.width,
+                height: config.height,
+                fps: config.fps,
+                codec: config.codec,
+                bitrate: newBitrate,
+                keyframeInterval: config.keyframeInterval,
+                fullColorMode: config.fullColorMode,
+                useNativeResolution: config.useNativeResolution,
+                maxPacketSize: config.maxPacketSize
+            )
+            requestedConfig = newConfig
+            sendConfigRequest()
         }
     }
 
