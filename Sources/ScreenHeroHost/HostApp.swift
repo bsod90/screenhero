@@ -2,6 +2,12 @@ import Foundation
 import ScreenHeroCore
 import AppKit
 
+/// Flush stdout to ensure output appears immediately
+func log(_ message: String) {
+    print(message)
+    fflush(stdout)
+}
+
 @available(macOS 14.0, *)
 @main
 struct HostCLI {
@@ -13,14 +19,14 @@ struct HostCLI {
             return
         }
 
-        print("ScreenHero Host (CLI)")
-        print("=====================")
-        print("Port: \(args.port)")
-        print("Resolution: \(args.width)x\(args.height)")
-        print("FPS: \(args.fps)")
-        print("Bitrate: \(args.bitrate / 1_000_000) Mbps")
-        print("Codec: \(args.codec)")
-        print("")
+        log("ScreenHero Host (CLI)")
+        log("=====================")
+        log("Port: \(args.port)")
+        log("Resolution: \(args.width)x\(args.height)")
+        log("FPS: \(args.fps)")
+        log("Bitrate: \(args.bitrate / 1_000_000) Mbps")
+        log("Codec: \(args.codec)")
+        log("")
 
         // Need to initialize NSApplication for screen capture permissions
         let app = NSApplication.shared
@@ -40,12 +46,12 @@ struct HostCLI {
             // Get display
             let displays = try await ScreenCaptureKitSource.availableDisplays()
             guard !displays.isEmpty else {
-                print("ERROR: No displays found")
+                log("ERROR: No displays found")
                 return
             }
 
             let display = displays[min(args.display, displays.count - 1)]
-            print("Display: \(display.width)x\(display.height)")
+            log("Display: \(display.width)x\(display.height)")
 
             // Create components
             let source = ScreenCaptureKitSource(config: config, displayID: display.displayID)
@@ -59,18 +65,18 @@ struct HostCLI {
                 config: config
             )
 
-            print("")
-            print("Starting server on port \(args.port)...")
+            log("")
+            log("Starting server on port \(args.port)...")
             try await pipeline.start()
-            print("Streaming! Press Ctrl+C to stop.")
-            print("")
+            log("Streaming! Press Ctrl+C to stop.")
+            log("")
 
             // Keep running
             while true {
                 try await Task.sleep(nanoseconds: 1_000_000_000)
             }
         } catch {
-            print("ERROR: \(error)")
+            log("ERROR: \(error)")
         }
     }
 

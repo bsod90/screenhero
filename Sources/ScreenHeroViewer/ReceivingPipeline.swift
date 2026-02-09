@@ -16,8 +16,6 @@ public actor ReceivingPipeline {
     // Statistics
     public private(set) var framesReceived: UInt64 = 0
     public private(set) var bytesReceived: UInt64 = 0
-    public private(set) var averageLatencyMs: Double = 0
-    private var latencySum: Double = 0
 
     public init(
         receiver: any NetworkReceiver,
@@ -67,14 +65,11 @@ public actor ReceivingPipeline {
             return
         }
 
-        print("[Pipeline] Starting packet processing loop")
+        netLog("[Pipeline] Starting packet processing loop")
 
         var packetsFromStream: UInt64 = 0
         for await packet in packetsStream {
             packetsFromStream += 1
-            if packetsFromStream <= 3 {
-                print("[Pipeline] Got packet \(packetsFromStream) from stream: frame \(packet.frameId), size \(packet.data.count), keyframe: \(packet.isKeyframe)")
-            }
 
             guard isRunning else { break }
 
@@ -82,20 +77,15 @@ public actor ReceivingPipeline {
             do {
                 let pixelBuffer = try await decoder.decode(packet)
 
-                // Calculate latency
-                let now = DispatchTime.now().uptimeNanoseconds
-                let latencyNs = now - packet.captureTimestamp
-                let latencyMs = Double(latencyNs) / 1_000_000
-
                 // Update statistics
                 framesReceived += 1
                 bytesReceived += UInt64(packet.data.count)
-                latencySum += latencyMs
-                averageLatencyMs = latencySum / Double(framesReceived)
 
-                // Log periodically
-                if framesReceived % 60 == 0 {
-                    print("[Pipeline] Frames: \(framesReceived), Latency: \(String(format: "%.1f", averageLatencyMs))ms")
+                // Log first frame and periodically
+                if framesReceived == 1 {
+                    netLog("[Pipeline] First frame decoded!")
+                } else if framesReceived % 60 == 0 {
+                    netLog("[Pipeline] Frames: \(framesReceived), Data: \(String(format: "%.1f", Double(bytesReceived) / 1_000_000))MB")
                 }
 
                 // Call frame handler
@@ -105,14 +95,14 @@ public actor ReceivingPipeline {
                 // Silently wait for keyframe
                 continue
             } catch {
-                // Only log unexpected errors occasionally
+                // Only log errors occasionally
                 if framesReceived % 60 == 0 {
-                    print("[Pipeline] Decode error: \(error)")
+                    netLog("[Pipeline] Decode error: \(error)")
                 }
             }
         }
 
-        print("[Pipeline] Packet loop ended")
+        netLog("[Pipeline] Packet loop ended")
     }
 
 
@@ -129,8 +119,7 @@ public actor ReceivingPipeline {
     public var statistics: ReceiveStatistics {
         ReceiveStatistics(
             framesReceived: framesReceived,
-            bytesReceived: bytesReceived,
-            averageLatencyMs: averageLatencyMs
+            bytesReceived: bytesReceived
         )
     }
 }
@@ -138,7 +127,6 @@ public actor ReceivingPipeline {
 public struct ReceiveStatistics: Sendable {
     public let framesReceived: UInt64
     public let bytesReceived: UInt64
-    public let averageLatencyMs: Double
 
     public var megabytesReceived: Double {
         Double(bytesReceived) / (1024 * 1024)

@@ -3,6 +3,12 @@ import ScreenHeroCore
 import AppKit
 import CoreVideo
 
+/// Flush stdout to ensure output appears immediately
+func log(_ message: String) {
+    print(message)
+    fflush(stdout)
+}
+
 @available(macOS 14.0, *)
 @main
 struct ViewerCLI {
@@ -15,15 +21,15 @@ struct ViewerCLI {
         }
 
         guard let host = args.host else {
-            print("ERROR: Host IP is required. Use -h <ip> to specify the host.")
-            print("Run with --help for usage information.")
+            log("ERROR: Host IP is required. Use -h <ip> to specify the host.")
+            log("Run with --help for usage information.")
             return
         }
 
-        print("ScreenHero Viewer (CLI)")
-        print("=======================")
-        print("Host: \(host):\(args.port)")
-        print("")
+        log("ScreenHero Viewer (CLI)")
+        log("=======================")
+        log("Host: \(host):\(args.port)")
+        log("")
 
         // Initialize NSApplication for window
         let app = NSApplication.shared
@@ -58,17 +64,17 @@ struct ViewerCLI {
                 config: config
             )
 
-            // Set up frame handler
+            // Set up frame handler - use DispatchQueue.main.async to avoid blocking
             await pipeline.setFrameHandler { pixelBuffer in
-                await MainActor.run {
+                DispatchQueue.main.async {
                     displayView.displayPixelBuffer(pixelBuffer)
                 }
             }
 
-            print("Connecting to \(host):\(args.port)...")
+            log("Connecting to \(host):\(args.port)...")
             try await pipeline.start()
-            print("Connected! Press Ctrl+C to stop.")
-            print("")
+            log("Connected! Press Ctrl+C to stop.")
+            log("")
 
             // Stats printing task
             let statsTask = Task {
@@ -78,7 +84,7 @@ struct ViewerCLI {
                     let stats = await pipeline.statistics
                     let fps = Double(stats.framesReceived - lastFrames) / 2.0
                     lastFrames = stats.framesReceived
-                    print("[Stats] Frames: \(stats.framesReceived), FPS: \(String(format: "%.1f", fps)), Latency: \(String(format: "%.1f", stats.averageLatencyMs))ms, Data: \(String(format: "%.1f", stats.megabytesReceived))MB")
+                    log("[Stats] Frames: \(stats.framesReceived), FPS: \(String(format: "%.1f", fps)), Data: \(String(format: "%.1f", stats.megabytesReceived))MB")
                 }
             }
 
@@ -88,7 +94,7 @@ struct ViewerCLI {
             statsTask.cancel()
 
         } catch {
-            print("ERROR: \(error)")
+            log("ERROR: \(error)")
         }
     }
 

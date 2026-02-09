@@ -142,4 +142,95 @@ final class UDPStreamingTests: XCTestCase {
         await client.stop()
         await server.stop()
     }
+
+    /// Full E2E test: SyntheticFrameSource -> Encoder -> UDP -> Decoder
+    /// This tests the complete streaming pipeline without needing screen capture permissions
+    func testFullPipelineE2E() async throws {
+        let serverPort: UInt16 = 15020
+
+        let config = StreamConfig(
+            width: 640,
+            height: 480,
+            fps: 30,
+            codec: .h264,
+            bitrate: 5_000_000,
+            keyframeInterval: 15,
+            lowLatencyMode: true
+        )
+
+        // Create components
+        let source = SyntheticFrameSource(config: config, pattern: .colorBars)
+        let encoder = VideoToolboxEncoder()
+        let server = UDPStreamServer(port: serverPort)
+        let client = UDPStreamClient(serverHost: "127.0.0.1", serverPort: serverPort)
+        let decoder = VideoToolboxDecoder()
+
+        // Configure encoder and decoder
+        try await encoder.configure(config)
+        try await decoder.configure(config)
+
+        // Start network
+        try await server.start()
+        try await client.start()
+
+        // Wait for subscription
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        // Track decoded frames
+        var decodedFrames = 0
+        let targetFrames = 30  // 1 second at 30fps
+
+        // Start decoder task
+        let decoderTask = Task {
+            let packetsStream = await client.getPackets()
+            for await packet in packetsStream {
+                do {
+                    _ = try await decoder.decode(packet)
+                    decodedFrames += 1
+                    if decodedFrames >= targetFrames {
+                        break
+                    }
+                } catch VideoDecoderError.waitingForKeyframe {
+                    continue
+                } catch {
+                    // Ignore other errors
+                }
+            }
+        }
+
+        // Start source and encode/send frames
+        try await source.start()
+        let framesStream = await source.frames
+
+        var framesSent = 0
+        for await sampleBuffer in framesStream {
+            do {
+                let packet = try await encoder.encode(sampleBuffer)
+                try await server.send(packet)
+                framesSent += 1
+
+                // Stop after sending enough frames
+                if framesSent >= targetFrames + 20 {  // Extra frames to ensure keyframe arrives
+                    break
+                }
+            } catch VideoEncoderError.noImageBuffer {
+                continue
+            } catch {
+                print("Encode error: \(error)")
+            }
+        }
+
+        // Wait for decoder to finish or timeout
+        try await Task.sleep(nanoseconds: 3_000_000_000)  // 3 seconds
+        decoderTask.cancel()
+
+        // Cleanup
+        await source.stop()
+        await client.stop()
+        await server.stop()
+
+        print("E2E Test: Sent \(framesSent) frames, decoded \(decodedFrames) frames")
+        XCTAssertGreaterThan(decodedFrames, 0, "Should decode at least some frames")
+        XCTAssertGreaterThanOrEqual(decodedFrames, targetFrames / 2, "Should decode at least half the target frames")
+    }
 }

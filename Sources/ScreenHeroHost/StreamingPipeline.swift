@@ -34,24 +34,24 @@ public actor StreamingPipeline {
         guard !isRunning else { return }
 
         // Configure encoder
-        print("[Pipeline] Configuring encoder...")
+        netLog("[Pipeline] Configuring encoder...")
         try await encoder.configure(config)
-        print("[Pipeline] Encoder configured")
+        netLog("[Pipeline] Encoder configured")
 
         // Start sender
-        print("[Pipeline] Starting sender...")
+        netLog("[Pipeline] Starting sender...")
         try await sender.start()
-        print("[Pipeline] Sender started")
+        netLog("[Pipeline] Sender started")
 
         // Start source
-        print("[Pipeline] Starting capture source...")
+        netLog("[Pipeline] Starting capture source...")
         try await source.start()
-        print("[Pipeline] Capture source started")
+        netLog("[Pipeline] Capture source started")
 
         isRunning = true
 
         // Start streaming task
-        print("[Pipeline] Starting streaming loop...")
+        netLog("[Pipeline] Starting streaming loop...")
         streamTask = Task { [weak self] in
             await self?.runPipeline()
         }
@@ -59,7 +59,7 @@ public actor StreamingPipeline {
 
     private func runPipeline() async {
         let framesStream = await source.frames
-        print("[Pipeline] Starting frame processing loop")
+        netLog("[Pipeline] Starting frame processing loop")
 
         for await sampleBuffer in framesStream {
             guard isRunning else { break }
@@ -78,7 +78,7 @@ public actor StreamingPipeline {
 
                 // Log every 60 frames (once per second at 60fps)
                 if framesSent % 60 == 0 {
-                    print("[Pipeline] Sent \(framesSent) frames, \(String(format: "%.2f", Double(bytesSent) / 1_000_000)) MB")
+                    netLog("[Pipeline] Sent \(framesSent) frames, \(String(format: "%.2f", Double(bytesSent) / 1_000_000)) MB")
                 }
             } catch VideoEncoderError.noImageBuffer {
                 // Skip sample buffers without image data (status frames from ScreenCaptureKit)
@@ -86,11 +86,11 @@ public actor StreamingPipeline {
             } catch {
                 // Only log other errors occasionally to avoid spam
                 if framesSent % 30 == 0 {
-                    print("[Pipeline] Error: \(error)")
+                    netLog("[Pipeline] Error: \(error)")
                 }
             }
         }
-        print("[Pipeline] Frame loop ended")
+        netLog("[Pipeline] Frame loop ended")
     }
 
     public func stop() async {
