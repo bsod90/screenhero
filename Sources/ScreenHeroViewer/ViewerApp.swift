@@ -64,11 +64,12 @@ struct ViewerCLI {
                 config: config
             )
 
-            // Set up frame handler - use DispatchQueue.main.async to avoid blocking
+            // Set up frame handler using CFRunLoopPerformBlock for guaranteed execution with app.run()
             await pipeline.setFrameHandler { pixelBuffer in
-                DispatchQueue.main.async {
+                CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
                     displayView.displayPixelBuffer(pixelBuffer)
                 }
+                CFRunLoopWakeUp(CFRunLoopGetMain())
             }
 
             log("Connecting to \(host):\(args.port)...")
@@ -193,12 +194,6 @@ class VideoDisplayView: NSView {
 
     func displayPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
         displayCallCount += 1
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-
-        if displayCallCount == 1 || displayCallCount % 60 == 0 {
-            log("[Display] displayPixelBuffer called #\(displayCallCount): \(width)x\(height)")
-        }
 
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         if let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) {
@@ -206,15 +201,17 @@ class VideoDisplayView: NSView {
             currentImage = cgImage
 
             if cgImageSuccessCount == 1 {
-                log("[Display] First CGImage created successfully: \(cgImage.width)x\(cgImage.height)")
+                let width = CVPixelBufferGetWidth(pixelBuffer)
+                let height = CVPixelBufferGetHeight(pixelBuffer)
+                log("[Display] First frame displayed: \(width)x\(height)")
             }
 
-            // Force immediate redraw instead of relying on needsDisplay
+            // Force immediate redraw
             display()
         } else {
             cgImageFailCount += 1
-            if cgImageFailCount == 1 || cgImageFailCount % 10 == 0 {
-                log("[Display] CGImage creation FAILED #\(cgImageFailCount)")
+            if cgImageFailCount == 1 {
+                log("[Display] CGImage creation FAILED")
             }
         }
     }
@@ -222,26 +219,14 @@ class VideoDisplayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         drawCallCount += 1
 
-        guard let context = NSGraphicsContext.current?.cgContext else {
-            log("[Display] draw() #\(drawCallCount): No graphics context!")
-            return
-        }
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
 
         // Fill with black
         context.setFillColor(NSColor.black.cgColor)
         context.fill(bounds)
 
         // Draw image
-        guard let image = currentImage else {
-            if drawCallCount <= 5 {
-                log("[Display] draw() #\(drawCallCount): No image yet")
-            }
-            return
-        }
-
-        if drawCallCount == 1 || drawCallCount % 60 == 0 {
-            log("[Display] draw() #\(drawCallCount): Drawing image \(image.width)x\(image.height)")
-        }
+        guard let image = currentImage else { return }
 
         let imageSize = CGSize(width: image.width, height: image.height)
         let viewSize = bounds.size

@@ -67,10 +67,7 @@ public actor ReceivingPipeline {
 
         netLog("[Pipeline] Starting packet processing loop")
 
-        var packetsFromStream: UInt64 = 0
         for await packet in packetsStream {
-            packetsFromStream += 1
-
             guard isRunning else { break }
 
             // Decode immediately - no jitter buffer for lowest latency
