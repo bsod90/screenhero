@@ -504,9 +504,16 @@ public actor UDPStreamServer: NetworkSender {
                                 UInt32(data[data.startIndex + 1]) << 16 |
                                 UInt32(data[data.startIndex + 2]) << 8 |
                                 UInt32(data[data.startIndex + 3])
-                    if magic == InputEvent.magic, let inputEvent = InputEvent.deserialize(from: data) {
-                        Task {
-                            await self.handleInputEvent(inputEvent, from: connection)
+                    if magic == InputEvent.magic {
+                        if let inputEvent = InputEvent.deserialize(from: data) {
+                            if inputEvent.type != .mouseMove {
+                                netLog("[UDPServer] Received input event: \(inputEvent.type)")
+                            }
+                            Task {
+                                await self.handleInputEvent(inputEvent, from: connection)
+                            }
+                        } else {
+                            netLog("[UDPServer] Failed to deserialize input event")
                         }
                     }
                 }
@@ -891,8 +898,14 @@ public actor UDPStreamClient: NetworkReceiver {
 
     /// Send an input event to the server
     public func sendInputEvent(_ event: InputEvent) {
-        guard isActive, let connection = connection else { return }
+        guard isActive, let connection = connection else {
+            netLog("[UDPClient] Cannot send input: isActive=\(isActive), connection=\(connection != nil)")
+            return
+        }
         let data = event.serialize()
+        if event.type != .mouseMove {
+            netLog("[UDPClient] Sending input event: \(event.type)")
+        }
         connection.send(content: data, completion: .idempotent)
     }
 

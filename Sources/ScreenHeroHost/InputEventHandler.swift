@@ -65,13 +65,15 @@ public class InputEventHandler {
 
     /// Handle an input event and optionally return a response event
     public func handleEvent(_ event: InputEvent) -> InputEvent? {
-        // Debug log
+        // Debug log for all non-move events, and periodic move events
         if event.type == .mouseMove {
-            if abs(event.x) > 0.1 || abs(event.y) > 0.1 {
-                print("[InputHandler] Received mouseMove: dx=\(event.x), dy=\(event.y)")
+            // Log mouse moves periodically to avoid spam
+            if !hasLoggedFirstEvent || (abs(event.x) > 5 || abs(event.y) > 5) {
+                print("[InputHandler] mouseMove: dx=\(event.x), dy=\(event.y) -> pos=(\(currentPosition.x + CGFloat(event.x)), \(currentPosition.y + CGFloat(event.y)))")
+                hasLoggedFirstEvent = true
             }
         } else {
-            print("[InputHandler] Received event: \(event.type)")
+            print("[InputHandler] EVENT: \(event.type) at pos=\(currentPosition)")
         }
 
         switch event.type {
@@ -146,8 +148,13 @@ public class InputEventHandler {
             mouseCursorPosition: point,
             mouseButton: .left
         ) else {
-            print("[InputHandler] Failed to create mouse move event")
+            print("[InputHandler] ERROR: Failed to create mouse move event")
             return
+        }
+
+        // Log first injection to confirm it's working
+        if !hasLoggedFirstEvent {
+            print("[InputHandler] Injecting first mouse move to \(point)")
         }
 
         event.post(tap: .cghidEventTap)

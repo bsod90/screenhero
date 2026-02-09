@@ -360,12 +360,16 @@ struct ViewerCLI {
         var enableInput: Bool = false
         var help: Bool = false
         // Stream config options (sent to server)
-        var streamWidth: Int = 1280
-        var streamHeight: Int = 720
+        // Defaults optimized for reliable streaming over lossy networks:
+        // - 1080p is a good balance of quality and keyframe size
+        // - 8Mbps keeps keyframes at ~35-50KB (25-36 fragments)
+        // - k=1 (every frame is keyframe) means any lost frame is recoverable
+        var streamWidth: Int = 1920
+        var streamHeight: Int = 1080
         var fps: Int = 60
-        var bitrate: Int = 10_000_000
+        var bitrate: Int = 8_000_000  // 8Mbps - good quality, small keyframes
         var codec: String = "h264"
-        var keyframeInterval: Int = 3
+        var keyframeInterval: Int = 1  // Every frame is keyframe for max reliability
         var fullColor: Bool = false
         var native: Bool = false
     }
@@ -434,12 +438,12 @@ struct ViewerCLI {
           -f, --fullscreen        Run in fullscreen mode
 
         Stream Config (sent to server - controls remote streaming):
-          -sw, --stream-width <px>  Stream width (default: 1280)
-          -sh, --stream-height <px> Stream height (default: 720)
+          -sw, --stream-width <px>  Stream width (default: 1920)
+          -sh, --stream-height <px> Stream height (default: 1080)
           --fps <fps>              Frames per second (default: 60)
-          -b, --bitrate <mbps>     Bitrate in Mbps (default: 10)
+          -b, --bitrate <mbps>     Bitrate in Mbps (default: 8)
           -c, --codec <codec>      h264 or hevc (default: h264)
-          -k, --keyframe <frames>  Keyframe interval (default: 3)
+          -k, --keyframe <frames>  Keyframe interval, 1=every frame (default: 1)
           --full-color             Enable 4:4:4 chroma for sharper text
           --native                 Use server's native display resolution
 
@@ -454,10 +458,10 @@ struct ViewerCLI {
           - Moving mouse to screen edge on host releases capture
 
         Examples:
-          ScreenHeroViewer -h 192.168.1.100                     # 720p default
-          ScreenHeroViewer -h 192.168.1.100 -sw 1920 -sh 1080 -b 20  # 1080p
-          ScreenHeroViewer -h 192.168.1.100 --native -b 30      # Native resolution
-          ScreenHeroViewer -h 192.168.1.100 --enable-input
+          ScreenHeroViewer -h 192.168.1.100                     # 1080p@8Mbps (reliable)
+          ScreenHeroViewer -h 192.168.1.100 -b 15 -k 3          # Higher quality
+          ScreenHeroViewer -h 192.168.1.100 --native -b 20      # Native resolution
+          ScreenHeroViewer -h 192.168.1.100 --enable-input      # With input capture
           ScreenHeroViewer -h 192.168.1.100 -f                  # Fullscreen
         """)
     }
