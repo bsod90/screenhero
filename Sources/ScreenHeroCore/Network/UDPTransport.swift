@@ -717,6 +717,15 @@ public actor UDPStreamServer: NetworkSender {
     public var subscriberCount: Int {
         subscribers.count
     }
+
+    /// Broadcast an input event to all subscribers (e.g., cursor position updates)
+    public func broadcastInputEvent(_ event: InputEvent) {
+        guard !subscribers.isEmpty else { return }
+        let data = event.serialize()
+        for (_, subscriber) in subscribers {
+            subscriber.connection.send(content: data, completion: .idempotent)
+        }
+    }
 }
 
 // MARK: - Client-style UDP Receiver (connects to server)

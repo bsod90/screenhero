@@ -103,6 +103,10 @@ public class InputEventHandler {
         case .releaseCapture:
             // This is sent TO viewer, not handled by host
             return nil
+
+        case .cursorPosition:
+            // This is sent FROM host TO viewer, not received by host
+            return nil
         }
     }
 

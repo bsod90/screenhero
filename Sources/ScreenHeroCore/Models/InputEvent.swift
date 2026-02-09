@@ -14,7 +14,19 @@ public struct InputEvent: Sendable {
         case scroll = 4
         case keyDown = 5
         case keyUp = 6
-        case releaseCapture = 7  // Host tells viewer to release mouse capture
+        case releaseCapture = 7   // Host tells viewer to release mouse capture
+        case cursorPosition = 8   // Host sends cursor position for local rendering
+    }
+
+    /// Cursor types for local rendering
+    public enum CursorType: UInt8, Sendable {
+        case arrow = 0
+        case iBeam = 1
+        case crosshair = 2
+        case pointingHand = 3
+        case resizeLeftRight = 4
+        case resizeUpDown = 5
+        case hidden = 255
     }
 
     /// Mouse button identifiers
@@ -63,6 +75,23 @@ public struct InputEvent: Sendable {
         self.button = button
         self.keyCode = keyCode
         self.modifiers = modifiers
+    }
+
+    /// Create a cursor position update event (host -> viewer)
+    /// x, y are absolute screen coordinates
+    /// cursorType indicates what cursor image to show
+    public static func cursorPosition(x: Float, y: Float, cursorType: CursorType = .arrow) -> InputEvent {
+        InputEvent(
+            type: .cursorPosition,
+            x: x,
+            y: y,
+            button: MouseButton(rawValue: cursorType.rawValue) ?? .none
+        )
+    }
+
+    /// Get cursor type from a cursorPosition event
+    public var cursorType: CursorType {
+        CursorType(rawValue: button.rawValue) ?? .arrow
     }
 
     /// Packet format (24 bytes total):
