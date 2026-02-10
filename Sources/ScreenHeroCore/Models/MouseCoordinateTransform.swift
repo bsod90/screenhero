@@ -34,15 +34,6 @@ public enum MouseCoordinateTransform {
         )
     }
 
-    /// Convert raw AppKit delta (X right, Y up) into normalized top-left delta.
-    public static func appKitDeltaToNormalizedTopLeft(deltaX: CGFloat, deltaY: CGFloat, in rect: CGRect) -> CGPoint {
-        guard rect.width > 0, rect.height > 0 else { return .zero }
-        return CGPoint(
-            x: deltaX / rect.width,
-            y: -deltaY / rect.height
-        )
-    }
-
     /// Convert an AppKit global display point (bottom-left origin) to normalized top-left coordinates.
     public static func appKitDisplayPointToNormalizedTopLeft(_ point: CGPoint, displayBounds: CGRect) -> CGPoint {
         viewPointToNormalizedTopLeft(point, in: displayBounds)

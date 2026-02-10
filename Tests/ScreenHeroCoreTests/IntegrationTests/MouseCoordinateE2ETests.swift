@@ -59,17 +59,11 @@ final class MouseCoordinateE2ETests: XCTestCase {
             return InputEvent(type: .mouseMove, timestamp: timestamp, x: Float(normalizedPosition.x), y: Float(normalizedPosition.y))
         }
 
-        mutating func move(deltaX: CGFloat, deltaY: CGFloat, timestamp: UInt64) -> InputEvent {
-            let normalizedDelta = MouseCoordinateTransform.appKitDeltaToNormalizedTopLeft(
-                deltaX: deltaX,
-                deltaY: deltaY,
+        mutating func move(to viewPoint: CGPoint, timestamp: UInt64) -> InputEvent {
+            normalizedPosition = MouseCoordinateTransform.viewPointToNormalizedTopLeft(
+                viewPoint,
                 in: videoRect
             )
-
-            normalizedPosition.x += normalizedDelta.x
-            normalizedPosition.y += normalizedDelta.y
-            normalizedPosition = MouseCoordinateTransform.clampNormalized(normalizedPosition)
-
             return InputEvent(type: .mouseMove, timestamp: timestamp, x: Float(normalizedPosition.x), y: Float(normalizedPosition.y))
         }
     }
@@ -108,36 +102,47 @@ final class MouseCoordinateE2ETests: XCTestCase {
         await client.sendInputEvent(captureEvent)
         try await waitForMoveCount(host: host, expected: 1)
         try await assertHostPoint(host: host, expected: CGPoint(x: 1056.0, y: 531.0))
+        let captureSnapshot = await host.snapshot()
 
-        // Step 2: move right and up in local AppKit space.
-        let move1 = viewer.move(deltaX: 128, deltaY: 90, timestamp: 2_000)
-        await client.sendInputEvent(move1)
+        // Step 2: move right and up in local AppKit space (Y increases upward).
+        let moveUp = viewer.move(to: CGPoint(x: 768, y: 490), timestamp: 2_000)
+        await client.sendInputEvent(moveUp)
         try await waitForMoveCount(host: host, expected: 2)
         try await assertHostPoint(host: host, expected: CGPoint(x: 1207.2, y: 408.25))
+        let moveUpSnapshot = await host.snapshot()
+        if let startY = captureSnapshot.point?.y, let movedY = moveUpSnapshot.point?.y {
+            XCTAssertLessThan(movedY, startY, "moving up locally must decrease host Y (top-left coordinates)")
+        }
 
-        // Step 3: stream resolution changes to 4:3. Viewer recomputes aspect-fit rect.
+        // Step 3: move down locally and ensure host Y increases.
+        let moveDown = viewer.move(to: CGPoint(x: 768, y: 430), timestamp: 2_500)
+        await client.sendInputEvent(moveDown)
+        try await waitForMoveCount(host: host, expected: 3)
+        try await assertHostPoint(host: host, expected: CGPoint(x: 1207.2, y: 490.083))
+        let moveDownSnapshot = await host.snapshot()
+        if let upY = moveUpSnapshot.point?.y, let downY = moveDownSnapshot.point?.y {
+            XCTAssertGreaterThan(downY, upY, "moving down locally must increase host Y")
+        }
+
+        // Step 4: stream resolution changes to 4:3. Viewer recomputes aspect-fit rect.
         viewer.updateRemoteVideoSize(width: 1280, height: 960)
         let postChangeRect = viewer.videoRect
         XCTAssertEqual(postChangeRect.height, 800, accuracy: 0.001)
         XCTAssertEqual(postChangeRect.width, 1066.666, accuracy: 0.01)
 
-        // Move by 10% of the new visible video rect in each axis.
-        let move2 = viewer.move(
-            deltaX: postChangeRect.width * 0.1,
-            deltaY: -postChangeRect.height * 0.1,
-            timestamp: 3_000
-        )
-        await client.sendInputEvent(move2)
-        try await waitForMoveCount(host: host, expected: 3)
+        // Step 5: move to an absolute point in the resized video rect.
+        let moveAfterResize = viewer.move(to: CGPoint(x: 853.333, y: 420), timestamp: 3_000)
+        await client.sendInputEvent(moveAfterResize)
+        try await waitForMoveCount(host: host, expected: 4)
         try await assertHostPoint(host: host, expected: CGPoint(x: 1358.4, y: 506.45))
 
-        // Step 4: out-of-order packet should not rewind position.
+        // Step 6: out-of-order packet should not rewind position.
         let stale = InputEvent(type: .mouseMove, timestamp: 2_500, x: 0.05, y: 0.95)
         await client.sendInputEvent(stale)
         try await Task.sleep(nanoseconds: 100_000_000)
 
         let snapshot = await host.snapshot()
-        XCTAssertEqual(snapshot.count, 3, "stale packet must be ignored")
+        XCTAssertEqual(snapshot.count, 4, "stale packet must be ignored")
         XCTAssertEqual(snapshot.timestamp, 3_000, "latest timestamp must stay unchanged")
         if let point = snapshot.point {
             XCTAssertEqual(point.x, 1358.4, accuracy: 1.0)

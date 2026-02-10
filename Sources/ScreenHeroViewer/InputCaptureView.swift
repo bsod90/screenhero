@@ -391,33 +391,39 @@ public class InputCaptureView: NSView {
 
     public override func mouseMoved(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
+        sendAbsolutePosition(from: event)
+    }
 
-        // Get raw deltas.
-        let deltaX = CGFloat(event.deltaX)
-        let deltaY = CGFloat(event.deltaY)
+    public override func mouseDragged(with event: NSEvent) {
+        guard isCaptured && inputEnabled else { return }
+        sendAbsolutePosition(from: event)
+    }
 
-        // Only process if there's actual movement.
-        guard abs(deltaX) > 0.1 || abs(deltaY) > 0.1 else { return }
+    public override func rightMouseDragged(with event: NSEvent) {
+        guard isCaptured && inputEnabled else { return }
+        sendAbsolutePosition(from: event)
+    }
 
-        let videoRect = calculateVideoRect()
-        let normalizedDelta = MouseCoordinateTransform.appKitDeltaToNormalizedTopLeft(
-            deltaX: deltaX,
-            deltaY: deltaY,
-            in: videoRect
-        )
+    public override func otherMouseDragged(with event: NSEvent) {
+        guard isCaptured && inputEnabled else { return }
+        sendAbsolutePosition(from: event)
+    }
 
-        // Update virtual mouse position with normalized deltas.
-        virtualMouseX += normalizedDelta.x
-        virtualMouseY += normalizedDelta.y
-        let clamped = MouseCoordinateTransform.clampNormalized(CGPoint(x: virtualMouseX, y: virtualMouseY))
-        virtualMouseX = clamped.x
-        virtualMouseY = clamped.y
+    /// Send an absolute normalized mouse position based on current view location.
+    private func sendAbsolutePosition(from event: NSEvent) {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let normalized = viewToNormalizedCoordinates(viewPoint)
 
-        // Send absolute normalized position.
+        let moved = abs(normalized.x - virtualMouseX) > 0.0005 || abs(normalized.y - virtualMouseY) > 0.0005
+        guard moved else { return }
+
+        virtualMouseX = normalized.x
+        virtualMouseY = normalized.y
+
         let inputEvent = InputEvent.mouseMove(normalizedX: Float(virtualMouseX), normalizedY: Float(virtualMouseY))
 
         if let sender = inputSender {
-            // Log occasionally to avoid spam
+            // Log occasionally to avoid spam.
             struct MoveCounter { static var count = 0 }
             MoveCounter.count += 1
             if MoveCounter.count <= 3 || MoveCounter.count % 60 == 0 {
@@ -425,41 +431,6 @@ public class InputCaptureView: NSView {
             }
             sender(inputEvent)
         }
-    }
-
-    public override func mouseDragged(with event: NSEvent) {
-        guard isCaptured && inputEnabled else { return }
-        updateAndSendAbsolutePosition(deltaX: CGFloat(event.deltaX), deltaY: CGFloat(event.deltaY))
-    }
-
-    public override func rightMouseDragged(with event: NSEvent) {
-        guard isCaptured && inputEnabled else { return }
-        updateAndSendAbsolutePosition(deltaX: CGFloat(event.deltaX), deltaY: CGFloat(event.deltaY))
-    }
-
-    public override func otherMouseDragged(with event: NSEvent) {
-        guard isCaptured && inputEnabled else { return }
-        updateAndSendAbsolutePosition(deltaX: CGFloat(event.deltaX), deltaY: CGFloat(event.deltaY))
-    }
-
-    /// Helper to update virtual position and send absolute normalized coordinates.
-    private func updateAndSendAbsolutePosition(deltaX: CGFloat, deltaY: CGFloat) {
-        let videoRect = calculateVideoRect()
-        let normalizedDelta = MouseCoordinateTransform.appKitDeltaToNormalizedTopLeft(
-            deltaX: deltaX,
-            deltaY: deltaY,
-            in: videoRect
-        )
-
-        virtualMouseX += normalizedDelta.x
-        virtualMouseY += normalizedDelta.y
-
-        let clamped = MouseCoordinateTransform.clampNormalized(CGPoint(x: virtualMouseX, y: virtualMouseY))
-        virtualMouseX = clamped.x
-        virtualMouseY = clamped.y
-
-        let inputEvent = InputEvent.mouseMove(normalizedX: Float(virtualMouseX), normalizedY: Float(virtualMouseY))
-        inputSender?(inputEvent)
     }
 
     public override func scrollWheel(with event: NSEvent) {
