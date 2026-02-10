@@ -92,4 +92,29 @@ final class InputEventHandlerTests: XCTestCase {
         XCTAssertEqual(point?.x ?? -1, 109, accuracy: 0.001)
         XCTAssertEqual(point?.y ?? -1, 20, accuracy: 0.001)
     }
+
+    func testMouseDeltaUsesTopLeftCoordinatesWithUpPositiveY() {
+        let delta = InputEventHandler.mouseDelta(
+            from: CGPoint(x: 100, y: 100),
+            to: CGPoint(x: 130, y: 80)
+        )
+
+        XCTAssertEqual(delta.dx, 30)
+        XCTAssertEqual(delta.dy, 20)
+    }
+
+    func testEffectiveClickStateUsesExplicitEncodedCount() {
+        let event = InputEvent.mouseDown(
+            button: .left,
+            normalizedX: 0.5,
+            normalizedY: 0.5,
+            clickCount: 2
+        )
+        XCTAssertEqual(InputEventHandler.effectiveClickState(for: event), 2)
+    }
+
+    func testEffectiveClickStateFallsBackToSingleClick() {
+        let event = InputEvent.mouseDown(button: .left)
+        XCTAssertEqual(InputEventHandler.effectiveClickState(for: event), 1)
+    }
 }

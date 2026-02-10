@@ -60,6 +60,7 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
         self.delegate = self
         self.isPaused = true  // We'll call draw() manually for each frame
         self.enableSetNeedsDisplay = false
+        self.autoResizeDrawable = false
         self.framebufferOnly = true
         self.colorPixelFormat = .bgra8Unorm
         self.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
@@ -85,6 +86,7 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
 
         // Create render pipeline
         createPipeline()
+        updateDrawableSize()
     }
 
     private func createPipeline() {
@@ -283,6 +285,30 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
 
     public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         // Handle resize if needed
+    }
+
+    public override func layout() {
+        super.layout()
+        updateDrawableSize()
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateDrawableSize()
+    }
+
+    private func updateDrawableSize() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1.0
+        let newSize = Self.drawableSize(for: bounds, backingScaleFactor: scale)
+        guard drawableSize != newSize else { return }
+        drawableSize = newSize
+    }
+
+    static func drawableSize(for bounds: CGRect, backingScaleFactor: CGFloat) -> CGSize {
+        CGSize(
+            width: max(1, bounds.width * backingScaleFactor),
+            height: max(1, bounds.height * backingScaleFactor)
+        )
     }
 
     public func draw(in view: MTKView) {

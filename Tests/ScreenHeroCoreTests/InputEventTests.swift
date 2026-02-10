@@ -32,7 +32,7 @@ final class InputEventTests: XCTestCase {
     }
 
     func testSerializeDeserializeMouseDownWithPointerPositionFlag() throws {
-        let event = InputEvent.mouseDown(button: .left, normalizedX: 0.72, normalizedY: 0.34)
+        let event = InputEvent.mouseDown(button: .left, normalizedX: 0.72, normalizedY: 0.34, clickCount: 2)
 
         let data = event.serialize()
         let decoded = InputEvent.deserialize(from: data)
@@ -43,6 +43,8 @@ final class InputEventTests: XCTestCase {
         XCTAssertEqual(Double(decoded?.x ?? 0), 0.72, accuracy: 0.001)
         XCTAssertEqual(Double(decoded?.y ?? 0), 0.34, accuracy: 0.001)
         XCTAssertTrue(decoded?.modifiers.contains(.hasPointerPosition) ?? false)
+        XCTAssertTrue(decoded?.modifiers.contains(.hasClickCount) ?? false)
+        XCTAssertEqual(decoded?.mouseClickCount, 2)
     }
 
     func testSerializeDeserializeMouseUp() throws {
@@ -57,7 +59,7 @@ final class InputEventTests: XCTestCase {
     }
 
     func testSerializeDeserializeMouseUpWithPointerPositionFlag() throws {
-        let event = InputEvent.mouseUp(button: .left, normalizedX: 0.19, normalizedY: 0.88)
+        let event = InputEvent.mouseUp(button: .left, normalizedX: 0.19, normalizedY: 0.88, clickCount: 3)
 
         let data = event.serialize()
         let decoded = InputEvent.deserialize(from: data)
@@ -68,6 +70,17 @@ final class InputEventTests: XCTestCase {
         XCTAssertEqual(Double(decoded?.x ?? 0), 0.19, accuracy: 0.001)
         XCTAssertEqual(Double(decoded?.y ?? 0), 0.88, accuracy: 0.001)
         XCTAssertTrue(decoded?.modifiers.contains(.hasPointerPosition) ?? false)
+        XCTAssertTrue(decoded?.modifiers.contains(.hasClickCount) ?? false)
+        XCTAssertEqual(decoded?.mouseClickCount, 3)
+    }
+
+    func testMouseClickCountDefaultsToOneWhenNotEncoded() throws {
+        let event = InputEvent.mouseDown(button: .left, x: 100, y: 200)
+        let data = event.serialize()
+        let decoded = InputEvent.deserialize(from: data)
+
+        XCTAssertEqual(decoded?.mouseClickCount, 1)
+        XCTAssertFalse(decoded?.modifiers.contains(.hasClickCount) ?? true)
     }
 
     func testSerializeDeserializeScroll() throws {

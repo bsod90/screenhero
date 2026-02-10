@@ -13,6 +13,9 @@ public class InputEventHandler {
     /// Current virtual mouse position (in CG coordinates - origin at top-left)
     private var currentPosition: CGPoint
 
+    /// Last injected cursor position for explicit drag delta synthesis.
+    private var lastInjectedPosition: CGPoint?
+
     /// Margin from edge to trigger release (pixels)
     private let edgeMargin: CGFloat = 2
 
@@ -30,6 +33,9 @@ public class InputEventHandler {
     private var isRightButtonDown = false
     private var isMiddleButtonDown = false
 
+    /// Shared event source so injected events carry coherent system state.
+    private let eventSource: CGEventSource?
+
     // MARK: - Initialization
 
     public init(displayID: CGDirectDisplayID? = nil) {
@@ -40,6 +46,8 @@ public class InputEventHandler {
 
         // Start at center of screen
         currentPosition = CGPoint(x: displayBounds.midX, y: displayBounds.midY)
+        lastInjectedPosition = currentPosition
+        eventSource = CGEventSource(stateID: .combinedSessionState)
 
         print("[InputHandler] Initialized for display \(targetDisplayID)")
         print("[InputHandler] Screen bounds: \(screenBounds)")
@@ -185,9 +193,12 @@ public class InputEventHandler {
     }
 
     private func injectMouseMove(to point: CGPoint, eventType: CGEventType, mouseButton: CGMouseButton) {
+        let previous = lastInjectedPosition ?? point
+        let delta = Self.mouseDelta(from: previous, to: point)
+
         // Point is already in CoreGraphics coordinates (origin at top-left)
         guard let event = CGEvent(
-            mouseEventSource: nil,
+            mouseEventSource: eventSource,
             mouseType: eventType,
             mouseCursorPosition: point,
             mouseButton: mouseButton
@@ -196,12 +207,17 @@ public class InputEventHandler {
             return
         }
 
+        // Preserve relative deltas for controls that consume drag deltas directly (e.g. DAWs).
+        event.setIntegerValueField(.mouseEventDeltaX, value: delta.dx)
+        event.setIntegerValueField(.mouseEventDeltaY, value: delta.dy)
+
         // Log first injection to confirm it's working
         if !hasLoggedFirstEvent {
             print("[InputHandler] Injecting first mouse move to \(point)")
         }
 
         event.post(tap: .cghidEventTap)
+        lastInjectedPosition = point
     }
 
     static func mouseMoveInjectionKind(
@@ -231,6 +247,7 @@ public class InputEventHandler {
     private func updatePositionFromPointerEventIfPresent(_ event: InputEvent) {
         guard let pointerPosition = Self.pointerPositionIfPresent(event, screenBounds: screenBounds) else { return }
         currentPosition = pointerPosition
+        lastInjectedPosition = pointerPosition
     }
 
     static func pointerPositionIfPresent(_ event: InputEvent, screenBounds: CGRect) -> CGPoint? {
@@ -246,6 +263,17 @@ public class InputEventHandler {
         return point
     }
 
+    static func mouseDelta(from previous: CGPoint, to current: CGPoint) -> (dx: Int64, dy: Int64) {
+        // NSEvent-style deltas: positive X is right, positive Y is up.
+        let dx = Int64((current.x - previous.x).rounded())
+        let dy = Int64((previous.y - current.y).rounded())
+        return (dx, dy)
+    }
+
+    static func effectiveClickState(for event: InputEvent) -> Int64 {
+        Int64(max(1, event.mouseClickCount))
+    }
+
     // MARK: - Mouse Buttons
 
     private func injectMouseButton(_ event: InputEvent, isDown: Bool) {
@@ -253,7 +281,7 @@ public class InputEventHandler {
 
         // currentPosition is already in CoreGraphics coordinates
         guard let cgEvent = CGEvent(
-            mouseEventSource: nil,
+            mouseEventSource: eventSource,
             mouseType: mouseType,
             mouseCursorPosition: currentPosition,
             mouseButton: mouseButton
@@ -262,7 +290,10 @@ public class InputEventHandler {
             return
         }
 
+        cgEvent.setIntegerValueField(.mouseEventClickState, value: Self.effectiveClickState(for: event))
+
         cgEvent.post(tap: .cghidEventTap)
+        lastInjectedPosition = currentPosition
     }
 
     private func getMouseTypeAndButton(_ button: InputEvent.MouseButton, isDown: Bool) -> (CGEventType, CGMouseButton) {
@@ -331,6 +362,7 @@ public class InputEventHandler {
     /// Reset mouse position to center of screen
     public func resetPosition() {
         currentPosition = CGPoint(x: screenBounds.midX, y: screenBounds.midY)
+        lastInjectedPosition = currentPosition
     }
 
     /// Get current virtual mouse position

@@ -49,6 +49,8 @@ public struct InputEvent: Sendable {
         public static let control = Modifiers(rawValue: 1 << 1)
         public static let option  = Modifiers(rawValue: 1 << 2)
         public static let command = Modifiers(rawValue: 1 << 3)
+        /// For mouse button events, indicates keyCode stores click count.
+        public static let hasClickCount = Modifiers(rawValue: 1 << 6)
 
         /// For mouse events, indicates that x/y contain an explicit normalized pointer position.
         public static let hasPointerPosition = Modifiers(rawValue: 1 << 7)
@@ -235,13 +237,26 @@ extension InputEvent {
     }
 
     /// Create a mouse button down event with explicit normalized pointer position.
-    public static func mouseDown(button: MouseButton, normalizedX: Float, normalizedY: Float) -> InputEvent {
-        InputEvent(
+    public static func mouseDown(
+        button: MouseButton,
+        normalizedX: Float,
+        normalizedY: Float,
+        clickCount: UInt8 = 1
+    ) -> InputEvent {
+        var modifiers: Modifiers = [.hasPointerPosition]
+        var encodedClickCount: UInt16 = 0
+        if clickCount > 0 {
+            modifiers.insert(.hasClickCount)
+            encodedClickCount = UInt16(clickCount)
+        }
+
+        return InputEvent(
             type: .mouseDown,
             x: normalizedX,
             y: normalizedY,
             button: button,
-            modifiers: [.hasPointerPosition]
+            keyCode: encodedClickCount,
+            modifiers: modifiers
         )
     }
 
@@ -251,13 +266,26 @@ extension InputEvent {
     }
 
     /// Create a mouse button up event with explicit normalized pointer position.
-    public static func mouseUp(button: MouseButton, normalizedX: Float, normalizedY: Float) -> InputEvent {
-        InputEvent(
+    public static func mouseUp(
+        button: MouseButton,
+        normalizedX: Float,
+        normalizedY: Float,
+        clickCount: UInt8 = 1
+    ) -> InputEvent {
+        var modifiers: Modifiers = [.hasPointerPosition]
+        var encodedClickCount: UInt16 = 0
+        if clickCount > 0 {
+            modifiers.insert(.hasClickCount)
+            encodedClickCount = UInt16(clickCount)
+        }
+
+        return InputEvent(
             type: .mouseUp,
             x: normalizedX,
             y: normalizedY,
             button: button,
-            modifiers: [.hasPointerPosition]
+            keyCode: encodedClickCount,
+            modifiers: modifiers
         )
     }
 
@@ -279,5 +307,11 @@ extension InputEvent {
     /// Create a release capture event (sent from host to viewer)
     public static func releaseCapture() -> InputEvent {
         InputEvent(type: .releaseCapture)
+    }
+
+    /// Mouse click count for button events. Defaults to 1 when not explicitly encoded.
+    public var mouseClickCount: Int {
+        guard modifiers.contains(.hasClickCount), keyCode > 0 else { return 1 }
+        return Int(keyCode)
     }
 }

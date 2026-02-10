@@ -216,6 +216,11 @@ struct ViewerCLI {
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(inputCaptureView)
         app.activate(ignoringOtherApps: true)
+        if args.fullscreen {
+            DispatchQueue.main.async {
+                window.toggleFullScreen(nil)
+            }
+        }
 
         do {
             // Decoder config (uses stream params from server)
@@ -376,7 +381,7 @@ struct ViewerCLI {
     static func createWindow(width: Int, height: Int, fullscreen: Bool) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-            styleMask: fullscreen ? [.borderless] : [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
@@ -385,11 +390,7 @@ struct ViewerCLI {
         window.isReleasedWhenClosed = false
         window.backgroundColor = .black
         window.acceptsMouseMovedEvents = true  // Required for mouse capture
-
-        if fullscreen {
-            window.level = .mainMenu + 1
-            window.setFrame(NSScreen.main!.frame, display: true)
-        }
+        window.collectionBehavior.insert(.fullScreenPrimary)
 
         return window
     }

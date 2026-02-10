@@ -56,5 +56,9 @@ let package = Package(
             name: "ScreenHeroHostTests",
             dependencies: ["ScreenHeroHost"]
         ),
+        .testTarget(
+            name: "ScreenHeroViewerTests",
+            dependencies: ["ScreenHeroViewer"]
+        ),
     ]
 )

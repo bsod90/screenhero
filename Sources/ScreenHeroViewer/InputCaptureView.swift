@@ -384,7 +384,8 @@ public class InputCaptureView: NSView {
             let clickEvent = InputEvent.mouseDown(
                 button: .left,
                 normalizedX: Float(virtualMouseX),
-                normalizedY: Float(virtualMouseY)
+                normalizedY: Float(virtualMouseY),
+                clickCount: UInt8(max(1, event.clickCount))
             )
             print("[InputCapture] SENDING initial position and mouseDown after capture")
             inputSender?(clickEvent)
@@ -396,7 +397,8 @@ public class InputCaptureView: NSView {
         let inputEvent = InputEvent.mouseDown(
             button: .left,
             normalizedX: Float(virtualMouseX),
-            normalizedY: Float(virtualMouseY)
+            normalizedY: Float(virtualMouseY),
+            clickCount: UInt8(max(1, event.clickCount))
         )
         print("[InputCapture] SENDING mouseDown")
         inputSender?(inputEvent)
@@ -408,7 +410,8 @@ public class InputCaptureView: NSView {
         let inputEvent = InputEvent.mouseUp(
             button: .left,
             normalizedX: Float(virtualMouseX),
-            normalizedY: Float(virtualMouseY)
+            normalizedY: Float(virtualMouseY),
+            clickCount: UInt8(max(1, event.clickCount))
         )
         inputSender?(inputEvent)
     }
@@ -419,7 +422,8 @@ public class InputCaptureView: NSView {
         let inputEvent = InputEvent.mouseDown(
             button: .right,
             normalizedX: Float(virtualMouseX),
-            normalizedY: Float(virtualMouseY)
+            normalizedY: Float(virtualMouseY),
+            clickCount: UInt8(max(1, event.clickCount))
         )
         inputSender?(inputEvent)
     }
@@ -430,7 +434,8 @@ public class InputCaptureView: NSView {
         let inputEvent = InputEvent.mouseUp(
             button: .right,
             normalizedX: Float(virtualMouseX),
-            normalizedY: Float(virtualMouseY)
+            normalizedY: Float(virtualMouseY),
+            clickCount: UInt8(max(1, event.clickCount))
         )
         inputSender?(inputEvent)
     }
@@ -442,7 +447,8 @@ public class InputCaptureView: NSView {
         let inputEvent = InputEvent.mouseDown(
             button: .middle,
             normalizedX: Float(virtualMouseX),
-            normalizedY: Float(virtualMouseY)
+            normalizedY: Float(virtualMouseY),
+            clickCount: UInt8(max(1, event.clickCount))
         )
         inputSender?(inputEvent)
     }
@@ -453,7 +459,8 @@ public class InputCaptureView: NSView {
         let inputEvent = InputEvent.mouseUp(
             button: .middle,
             normalizedX: Float(virtualMouseX),
-            normalizedY: Float(virtualMouseY)
+            normalizedY: Float(virtualMouseY),
+            clickCount: UInt8(max(1, event.clickCount))
         )
         inputSender?(inputEvent)
     }
@@ -516,7 +523,11 @@ public class InputCaptureView: NSView {
     public override func keyDown(with event: NSEvent) {
         // SAFETY: Escape ALWAYS releases, cannot be overridden
         if event.keyCode == escapeKeyCode {
-            releaseMouse()
+            if Self.shouldConsumeEscape(isCaptured: isCaptured, inputEnabled: inputEnabled) {
+                releaseMouse()
+            } else {
+                super.keyDown(with: event)
+            }
             return
         }
 
@@ -528,8 +539,12 @@ public class InputCaptureView: NSView {
     }
 
     public override func keyUp(with event: NSEvent) {
-        // Don't send escape key up
-        if event.keyCode == escapeKeyCode { return }
+        if event.keyCode == escapeKeyCode {
+            if !Self.shouldConsumeEscape(isCaptured: isCaptured, inputEnabled: inputEnabled) {
+                super.keyUp(with: event)
+            }
+            return
+        }
 
         guard isCaptured && inputEnabled else { return }
 
@@ -562,5 +577,9 @@ public class InputCaptureView: NSView {
         }
 
         return modifiers
+    }
+
+    static func shouldConsumeEscape(isCaptured: Bool, inputEnabled: Bool) -> Bool {
+        isCaptured && inputEnabled
     }
 }
