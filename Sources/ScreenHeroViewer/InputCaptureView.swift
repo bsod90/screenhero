@@ -245,14 +245,14 @@ public class InputCaptureView: NSView {
 
         isCaptured = true
 
-        // Hide system cursor
-        NSCursor.hide()
+        // DEBUG: Don't hide system cursor so we can compare positions
+        // NSCursor.hide()
 
         // Show local cursor layer (receives position from host)
         cursorLayer?.isHidden = false
 
-        // Disassociate mouse and cursor position (relative mode)
-        CGAssociateMouseAndMouseCursorPosition(0)
+        // DEBUG: Don't disassociate so we can see both cursors
+        // CGAssociateMouseAndMouseCursorPosition(0)
 
         // Get current mouse location
         if let window = window {
@@ -271,14 +271,14 @@ public class InputCaptureView: NSView {
 
         isCaptured = false
 
-        // Show system cursor
-        NSCursor.unhide()
+        // DEBUG: Cursor wasn't hidden
+        // NSCursor.unhide()
 
         // Hide local cursor layer (system cursor takes over)
         cursorLayer?.isHidden = true
 
-        // Re-associate mouse and cursor position
-        CGAssociateMouseAndMouseCursorPosition(1)
+        // DEBUG: Wasn't disassociated
+        // CGAssociateMouseAndMouseCursorPosition(1)
 
         // Remove visual indicator
         hideCapturedBorder()
@@ -387,9 +387,11 @@ public class InputCaptureView: NSView {
 
         let inputEvent = InputEvent.mouseMove(deltaX: deltaX, deltaY: deltaY)
 
-        if inputSender != nil {
+        if let sender = inputSender {
             print("[InputCapture] SENDING mouseMove: dx=\(deltaX), dy=\(deltaY)")
-            inputSender?(inputEvent)
+            print("[InputCapture] About to call sender...")
+            sender(inputEvent)
+            print("[InputCapture] Sender returned")
         } else {
             print("[InputCapture] ERROR: inputSender is nil!")
         }

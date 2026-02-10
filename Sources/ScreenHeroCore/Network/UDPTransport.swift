@@ -1465,22 +1465,21 @@ public actor UDPInputClient {
     private static var hasLoggedFirstInput = false
 
     public func sendInputEvent(_ event: InputEvent) {
+        netLog("[UDPInputClient] sendInputEvent called: \(event.type)")
+
         guard isActive, let connection = connection else {
             netLog("[UDPInputClient] Cannot send input: isActive=\(isActive), connection=\(connection != nil)")
             return
         }
 
         let data = event.serialize()
-
-        // Log first input event
-        if !Self.hasLoggedFirstInput {
-            netLog("[UDPInputClient] Sending first input: \(event.type), size=\(data.count) bytes to \(serverHost):\(serverPort)")
-            Self.hasLoggedFirstInput = true
-        }
+        netLog("[UDPInputClient] Sending \(event.type), size=\(data.count) bytes to \(serverHost):\(serverPort)")
 
         connection.send(content: data, completion: .contentProcessed { error in
             if let error = error {
                 netLog("[UDPInputClient] Send error: \(error)")
+            } else {
+                netLog("[UDPInputClient] Send completed for \(event.type)")
             }
         })
     }

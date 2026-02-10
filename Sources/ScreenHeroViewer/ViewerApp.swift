@@ -317,7 +317,9 @@ struct ViewerCLI {
                     } else {
                         log("[Input] Callback: \(inputEvent.type)")
                     }
-                    Task {
+
+                    // Use detached task to avoid being tied to main actor
+                    Task.detached {
                         await inputClient.sendInputEvent(inputEvent)
                     }
                 }
