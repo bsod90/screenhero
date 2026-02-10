@@ -1266,41 +1266,60 @@ public actor UDPInputServer {
         connection.start(queue: queue)
     }
 
+    /// Track if we've logged first receive
+    private static var hasLoggedFirstReceive = false
+
     private nonisolated func receiveOnConnection(_ connection: NWConnection) {
         connection.receiveMessage { [weak self] content, _, _, error in
             guard let self = self else { return }
 
-            if let data = content, data.count >= 4 {
-                let magic = UInt32(data[data.startIndex]) << 24 |
-                            UInt32(data[data.startIndex + 1]) << 16 |
-                            UInt32(data[data.startIndex + 2]) << 8 |
-                            UInt32(data[data.startIndex + 3])
-                if magic == InputEvent.magic, let inputEvent = InputEvent.deserialize(from: data) {
-                    Task {
-                        await self.handleInputEvent(inputEvent, from: connection)
+            if let error = error {
+                netLog("[UDPInputServer] Receive error: \(error)")
+                return
+            }
+
+            if let data = content {
+                // Log first data received
+                if !Self.hasLoggedFirstReceive {
+                    let preview = data.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " ")
+                    netLog("[UDPInputServer] First data received: \(data.count) bytes, preview: \(preview)")
+                    Self.hasLoggedFirstReceive = true
+                }
+
+                if data.count >= 4 {
+                    let magic = UInt32(data[data.startIndex]) << 24 |
+                                UInt32(data[data.startIndex + 1]) << 16 |
+                                UInt32(data[data.startIndex + 2]) << 8 |
+                                UInt32(data[data.startIndex + 3])
+                    if magic == InputEvent.magic, let inputEvent = InputEvent.deserialize(from: data) {
+                        Task {
+                            await self.handleInputEvent(inputEvent, from: connection)
+                        }
+                    } else {
+                        netLog("[UDPInputServer] Magic mismatch: got 0x\(String(format: "%08X", magic)), expected 0x\(String(format: "%08X", InputEvent.magic))")
                     }
                 }
             }
 
-            if error == nil {
-                self.receiveOnConnection(connection)
-            }
+            self.receiveOnConnection(connection)
         }
     }
 
     private func handleListenerState(_ state: NWListener.State, continuation: CheckedContinuation<Void, Error>) async {
         switch state {
         case .ready:
-            netLog("[UDPInputServer] Listening on port \(port)")
+            netLog("[UDPInputServer] Listening on port \(port) - READY for input events")
             isActive = true
             continuation.resume()
         case .failed(let error):
-            netLog("[UDPInputServer] Failed: \(error)")
+            netLog("[UDPInputServer] Failed to start on port \(port): \(error)")
             isActive = false
             continuation.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
         case .cancelled:
+            netLog("[UDPInputServer] Cancelled")
             isActive = false
         default:
+            netLog("[UDPInputServer] State: \(state)")
             break
         }
     }
@@ -1376,19 +1395,49 @@ public actor UDPInputClient {
             using: params
         )
 
-        connection?.stateUpdateHandler = { [weak self] state in
-            guard let self = self else { return }
-            Task {
-                await self.handleState(state)
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            var resumed = false
+            connection?.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
+                switch state {
+                case .ready:
+                    Task {
+                        await self.setActive(true)
+                        await self.startReceivingAsync()
+                        netLog("[UDPInputClient] Connected to \(self.serverHost):\(self.serverPort)")
+                        if !resumed {
+                            resumed = true
+                            cont.resume()
+                        }
+                    }
+                case .failed(let error):
+                    Task { await self.setActive(false) }
+                    if !resumed {
+                        resumed = true
+                        cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
+                    }
+                case .cancelled:
+                    Task { await self.setActive(false) }
+                default:
+                    break
+                }
             }
+            connection?.start(queue: queue)
         }
+    }
 
-        connection?.start(queue: queue)
+    private func setActive(_ value: Bool) {
+        isActive = value
     }
 
     private func startReceiving() {
         guard let conn = connection else { return }
         receiveLoop(on: conn)
+    }
+
+    /// Async wrapper for startReceiving (can be called from Task)
+    private func startReceivingAsync() {
+        startReceiving()
     }
 
     private nonisolated func receiveLoop(on connection: NWConnection) {
@@ -1411,25 +1460,28 @@ public actor UDPInputClient {
         }
     }
 
+    /// Track first input send for logging
+    private static var hasLoggedFirstInput = false
+
     public func sendInputEvent(_ event: InputEvent) {
         guard isActive, let connection = connection else {
             netLog("[UDPInputClient] Cannot send input: isActive=\(isActive), connection=\(connection != nil)")
             return
         }
-        connection.send(content: event.serialize(), completion: .idempotent)
-    }
 
-    private func handleState(_ state: NWConnection.State) async {
-        switch state {
-        case .ready:
-            isActive = true
-            startReceiving()
-            netLog("[UDPInputClient] Connected to \(serverHost):\(serverPort)")
-        case .failed, .cancelled:
-            isActive = false
-        default:
-            break
+        let data = event.serialize()
+
+        // Log first input event
+        if !Self.hasLoggedFirstInput {
+            netLog("[UDPInputClient] Sending first input: \(event.type), size=\(data.count) bytes to \(serverHost):\(serverPort)")
+            Self.hasLoggedFirstInput = true
         }
+
+        connection.send(content: data, completion: .contentProcessed { error in
+            if let error = error {
+                netLog("[UDPInputClient] Send error: \(error)")
+            }
+        })
     }
 
     private func handleIncomingEvent(_ event: InputEvent) async {

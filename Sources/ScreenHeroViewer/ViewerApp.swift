@@ -298,8 +298,10 @@ struct ViewerCLI {
             if args.enableInput {
                 // Separate UDP input channel to avoid video congestion
                 let inputPort = args.inputPort ?? args.port + 1
+                log("[Input] Connecting to input server at \(host):\(inputPort)...")
                 let inputClient = UDPInputClient(serverHost: host, serverPort: inputPort)
                 try await inputClient.start()
+                log("[Input] Connected to input server!")
 
                 // Enable input capture with sender callback
                 inputCaptureView.enableInput { inputEvent in
