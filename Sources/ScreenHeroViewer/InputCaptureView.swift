@@ -525,6 +525,8 @@ public class InputCaptureView: NSView {
         if event.keyCode == escapeKeyCode {
             if Self.shouldConsumeEscape(isCaptured: isCaptured, inputEnabled: inputEnabled) {
                 releaseMouse()
+            } else if Self.shouldExitFullscreenOnEscape(windowStyleMask: window?.styleMask ?? []) {
+                window?.toggleFullScreen(nil)
             } else {
                 super.keyDown(with: event)
             }
@@ -581,5 +583,9 @@ public class InputCaptureView: NSView {
 
     static func shouldConsumeEscape(isCaptured: Bool, inputEnabled: Bool) -> Bool {
         isCaptured && inputEnabled
+    }
+
+    static func shouldExitFullscreenOnEscape(windowStyleMask: NSWindow.StyleMask) -> Bool {
+        windowStyleMask.contains(.fullScreen)
     }
 }

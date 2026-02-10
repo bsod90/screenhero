@@ -16,6 +16,9 @@ public class InputEventHandler {
     /// Last injected cursor position for explicit drag delta synthesis.
     private var lastInjectedPosition: CGPoint?
 
+    /// Last normalized-absolute input position received from viewer for delta synthesis.
+    private var lastInputPosition: CGPoint?
+
     /// Margin from edge to trigger release (pixels)
     private let edgeMargin: CGFloat = 2
 
@@ -33,8 +36,16 @@ public class InputEventHandler {
     private var isRightButtonDown = false
     private var isMiddleButtonDown = false
 
+    /// Whether host is in relative drag mode (target app hidden/locked cursor).
+    private var isRelativeDragMode = false
+    private var relativeDragAnchor: CGPoint?
+    private var pointerMismatchStreak = 0
+
     /// Shared event source so injected events carry coherent system state.
     private let eventSource: CGEventSource?
+
+    private static let relativeDragPointerDriftThreshold: CGFloat = 12
+    private static let relativeDragActivationStreak = 3
 
     // MARK: - Initialization
 
@@ -47,6 +58,7 @@ public class InputEventHandler {
         // Start at center of screen
         currentPosition = CGPoint(x: displayBounds.midX, y: displayBounds.midY)
         lastInjectedPosition = currentPosition
+        lastInputPosition = currentPosition
         eventSource = CGEventSource(stateID: .combinedSessionState)
 
         print("[InputHandler] Initialized for display \(targetDisplayID)")
@@ -164,20 +176,61 @@ public class InputEventHandler {
         currentPosition.x = max(screenBounds.minX, min(screenBounds.maxX - 1, currentPosition.x))
         currentPosition.y = max(screenBounds.minY, min(screenBounds.maxY - 1, currentPosition.y))
 
+        let previousInput = lastInputPosition ?? currentPosition
+        let inputDelta = Self.mouseDelta(from: previousInput, to: currentPosition)
+        lastInputPosition = currentPosition
+
+        let anyButtonDown = isLeftButtonDown || isRightButtonDown || isMiddleButtonDown
+        let hostPointer = currentPointerLocation() ?? currentPosition
+        let pointerDrift = hypot(hostPointer.x - currentPosition.x, hostPointer.y - currentPosition.y)
+
+        if anyButtonDown {
+            if pointerDrift >= Self.relativeDragPointerDriftThreshold {
+                pointerMismatchStreak += 1
+            } else {
+                pointerMismatchStreak = 0
+            }
+
+            let shouldUseRelativeDrag = Self.shouldUseRelativeDragMode(
+                anyButtonDown: anyButtonDown,
+                pointerDrift: pointerDrift,
+                mismatchStreak: pointerMismatchStreak
+            )
+            if shouldUseRelativeDrag && !isRelativeDragMode {
+                isRelativeDragMode = true
+                relativeDragAnchor = hostPointer
+                print("[InputHandler] Entered relative drag mode (pointer drift: \(Int(pointerDrift)))")
+            }
+        } else {
+            pointerMismatchStreak = 0
+            if isRelativeDragMode {
+                isRelativeDragMode = false
+                relativeDragAnchor = nil
+                print("[InputHandler] Exited relative drag mode")
+            }
+        }
+
         // Inject mouse motion; synthesize drag events while a button is held.
         let moveInjection = Self.mouseMoveInjectionKind(
             leftDown: isLeftButtonDown,
             rightDown: isRightButtonDown,
             middleDown: isMiddleButtonDown
         )
+        let injectionPoint = isRelativeDragMode ? (relativeDragAnchor ?? currentPosition) : currentPosition
         injectMouseMove(
-            to: currentPosition,
+            to: injectionPoint,
             eventType: moveInjection.type,
-            mouseButton: moveInjection.button
+            mouseButton: moveInjection.button,
+            deltaOverride: isRelativeDragMode ? inputDelta : nil
         )
 
+        // Keep relative anchor synced to actual host pointer if it drifts.
+        if isRelativeDragMode, let hostPoint = currentPointerLocation() {
+            relativeDragAnchor = hostPoint
+        }
+
         // If hit edge, tell viewer to release capture
-        if hitEdge {
+        if hitEdge && !isRelativeDragMode {
             print("[InputHandler] Edge hit at \(currentPosition), bounds=\(screenBounds), releasing capture")
             return InputEvent.releaseCapture()
         }
@@ -192,9 +245,14 @@ public class InputEventHandler {
                currentPosition.y >= screenBounds.maxY - edgeMargin
     }
 
-    private func injectMouseMove(to point: CGPoint, eventType: CGEventType, mouseButton: CGMouseButton) {
+    private func injectMouseMove(
+        to point: CGPoint,
+        eventType: CGEventType,
+        mouseButton: CGMouseButton,
+        deltaOverride: (dx: Int64, dy: Int64)? = nil
+    ) {
         let previous = lastInjectedPosition ?? point
-        let delta = Self.mouseDelta(from: previous, to: point)
+        let delta = deltaOverride ?? Self.mouseDelta(from: previous, to: point)
 
         // Point is already in CoreGraphics coordinates (origin at top-left)
         guard let event = CGEvent(
@@ -248,6 +306,7 @@ public class InputEventHandler {
         guard let pointerPosition = Self.pointerPositionIfPresent(event, screenBounds: screenBounds) else { return }
         currentPosition = pointerPosition
         lastInjectedPosition = pointerPosition
+        lastInputPosition = pointerPosition
     }
 
     static func pointerPositionIfPresent(_ event: InputEvent, screenBounds: CGRect) -> CGPoint? {
@@ -268,6 +327,16 @@ public class InputEventHandler {
         let dx = Int64((current.x - previous.x).rounded())
         let dy = Int64((previous.y - current.y).rounded())
         return (dx, dy)
+    }
+
+    static func shouldUseRelativeDragMode(
+        anyButtonDown: Bool,
+        pointerDrift: CGFloat,
+        mismatchStreak: Int
+    ) -> Bool {
+        anyButtonDown &&
+        pointerDrift >= relativeDragPointerDriftThreshold &&
+        mismatchStreak >= relativeDragActivationStreak
     }
 
     static func effectiveClickState(for event: InputEvent) -> Int64 {
@@ -294,6 +363,12 @@ public class InputEventHandler {
 
         cgEvent.post(tap: .cghidEventTap)
         lastInjectedPosition = currentPosition
+
+        if !isLeftButtonDown && !isRightButtonDown && !isMiddleButtonDown {
+            isRelativeDragMode = false
+            relativeDragAnchor = nil
+            pointerMismatchStreak = 0
+        }
     }
 
     private func getMouseTypeAndButton(_ button: InputEvent.MouseButton, isDown: Bool) -> (CGEventType, CGMouseButton) {
@@ -363,10 +438,18 @@ public class InputEventHandler {
     public func resetPosition() {
         currentPosition = CGPoint(x: screenBounds.midX, y: screenBounds.midY)
         lastInjectedPosition = currentPosition
+        lastInputPosition = currentPosition
+        isRelativeDragMode = false
+        relativeDragAnchor = nil
+        pointerMismatchStreak = 0
     }
 
     /// Get current virtual mouse position
     public var position: CGPoint {
         currentPosition
+    }
+
+    private nonisolated func currentPointerLocation() -> CGPoint? {
+        CGEvent(source: nil)?.location
     }
 }

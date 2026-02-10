@@ -117,4 +117,44 @@ final class InputEventHandlerTests: XCTestCase {
         let event = InputEvent.mouseDown(button: .left)
         XCTAssertEqual(InputEventHandler.effectiveClickState(for: event), 1)
     }
+
+    func testShouldUseRelativeDragModeWhenDriftStreakCrossesThreshold() {
+        XCTAssertTrue(
+            InputEventHandler.shouldUseRelativeDragMode(
+                anyButtonDown: true,
+                pointerDrift: 20,
+                mismatchStreak: 3
+            )
+        )
+    }
+
+    func testShouldNotUseRelativeDragModeWhenNoButtonsHeld() {
+        XCTAssertFalse(
+            InputEventHandler.shouldUseRelativeDragMode(
+                anyButtonDown: false,
+                pointerDrift: 20,
+                mismatchStreak: 3
+            )
+        )
+    }
+
+    func testShouldNotUseRelativeDragModeWhenDriftIsSmall() {
+        XCTAssertFalse(
+            InputEventHandler.shouldUseRelativeDragMode(
+                anyButtonDown: true,
+                pointerDrift: 4,
+                mismatchStreak: 10
+            )
+        )
+    }
+
+    func testShouldNotUseRelativeDragModeBeforeStreakThreshold() {
+        XCTAssertFalse(
+            InputEventHandler.shouldUseRelativeDragMode(
+                anyButtonDown: true,
+                pointerDrift: 20,
+                mismatchStreak: 2
+            )
+        )
+    }
 }

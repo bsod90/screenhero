@@ -292,6 +292,16 @@ public class MetalVideoDisplayView: MTKView, MTKViewDelegate {
         updateDrawableSize()
     }
 
+    public override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updateDrawableSize()
+    }
+
+    public override func setBoundsSize(_ newSize: NSSize) {
+        super.setBoundsSize(newSize)
+        updateDrawableSize()
+    }
+
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateDrawableSize()

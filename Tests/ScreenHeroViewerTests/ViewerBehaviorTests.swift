@@ -10,6 +10,15 @@ final class ViewerBehaviorTests: XCTestCase {
         XCTAssertFalse(InputCaptureView.shouldConsumeEscape(isCaptured: false, inputEnabled: false))
     }
 
+    func testShouldExitFullscreenOnEscapeWhenWindowIsFullscreen() {
+        XCTAssertTrue(
+            InputCaptureView.shouldExitFullscreenOnEscape(windowStyleMask: [.fullScreen, .titled])
+        )
+        XCTAssertFalse(
+            InputCaptureView.shouldExitFullscreenOnEscape(windowStyleMask: [.titled, .resizable])
+        )
+    }
+
     func testDrawableSizeScalesByBackingFactor() {
         let size = MetalVideoDisplayView.drawableSize(
             for: CGRect(x: 0, y: 0, width: 1280, height: 720),
