@@ -30,9 +30,6 @@ public class InputCaptureView: NSView {
     /// Callback to send input events to network
     private var inputSender: ((InputEvent) -> Void)?
 
-    /// Track last mouse location for delta calculation
-    private var lastMouseLocation: CGPoint = .zero
-
     /// Border layer for visual indicator
     private var borderLayer: CAShapeLayer?
 
@@ -50,6 +47,21 @@ public class InputCaptureView: NSView {
     private var virtualMouseX: CGFloat = 0.5
     private var virtualMouseY: CGFloat = 0.5
 
+    /// Whether we currently hide the local system cursor.
+    private var isSystemCursorHidden = false
+
+    /// Debug counters for sampled logging.
+    private var cursorLogCount = 0
+    private var sentMoveLogCount = 0
+
+    private struct CursorVisual {
+        let image: CGImage
+        let imageSize: CGSize
+        let hotSpotTopLeft: CGPoint
+    }
+
+    private var currentCursorVisual: CursorVisual?
+
     // MARK: - Initialization
 
     public init(frame: NSRect, videoView: MetalVideoDisplayView) {
@@ -60,6 +72,13 @@ public class InputCaptureView: NSView {
 
     public required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    public override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            unhideSystemCursorIfNeeded()
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     private func setupView() {
@@ -86,44 +105,82 @@ public class InputCaptureView: NSView {
 
     private func setupCursorLayer() {
         let cursor = CALayer()
-        cursor.bounds = CGRect(x: 0, y: 0, width: 16, height: 24)
-        cursor.anchorPoint = CGPoint(x: 0, y: 0)  // Hot spot at top-left for arrow
+        cursor.bounds = CGRect(x: 0, y: 0, width: 1, height: 1)
+        cursor.anchorPoint = CGPoint(x: 0, y: 0)
         cursor.position = CGPoint(x: 0, y: 0)
-        cursor.zPosition = 1000  // Above everything
-        cursor.isHidden = true  // Hidden by default, shown when captured
+        cursor.zPosition = 1000
+        cursor.contentsGravity = .resize
+        cursor.isHidden = true
 
-        // Create arrow cursor image
-        let cursorImage = createCursorImage(type: .arrow)
-        cursor.contents = cursorImage
+        cursorLayer = cursor
+        applyCursorVisual(createCursorVisual(type: .arrow))
 
         layer?.addSublayer(cursor)
-        cursorLayer = cursor
     }
 
-    private func createCursorImage(type: InputEvent.CursorType) -> CGImage? {
-        // Get system cursor image
-        let cursor: NSCursor
+    private func systemCursor(for type: InputEvent.CursorType) -> NSCursor? {
         switch type {
         case .arrow:
-            cursor = NSCursor.arrow
+            return NSCursor.arrow
         case .iBeam:
-            cursor = NSCursor.iBeam
+            return NSCursor.iBeam
         case .crosshair:
-            cursor = NSCursor.crosshair
+            return NSCursor.crosshair
         case .pointingHand:
-            cursor = NSCursor.pointingHand
+            return NSCursor.pointingHand
         case .resizeLeftRight:
-            cursor = NSCursor.resizeLeftRight
+            return NSCursor.resizeLeftRight
         case .resizeUpDown:
-            cursor = NSCursor.resizeUpDown
+            return NSCursor.resizeUpDown
         case .hidden:
             return nil
         }
+    }
 
-        // Get the cursor image
+    private func createCursorVisual(type: InputEvent.CursorType) -> CursorVisual? {
+        guard let cursor = systemCursor(for: type) else { return nil }
+
         let image = cursor.image
-        var rect = CGRect(origin: .zero, size: image.size)
-        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+        let imageSize = image.size
+        var rect = CGRect(origin: .zero, size: imageSize)
+        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            return nil
+        }
+
+        return CursorVisual(
+            image: cgImage,
+            imageSize: imageSize,
+            hotSpotTopLeft: cursor.hotSpot
+        )
+    }
+
+    private func applyCursorVisual(_ visual: CursorVisual?) {
+        currentCursorVisual = visual
+        guard let layer = cursorLayer else { return }
+
+        if let visual {
+            layer.contents = visual.image
+            layer.bounds = CGRect(origin: .zero, size: visual.imageSize)
+        } else {
+            layer.contents = nil
+            layer.bounds = CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+    }
+
+    private func updateCursorLayerVisibility() {
+        cursorLayer?.isHidden = !isCaptured || currentCursorType == .hidden
+    }
+
+    private func hideSystemCursorIfNeeded() {
+        guard !isSystemCursorHidden else { return }
+        NSCursor.hide()
+        isSystemCursorHidden = true
+    }
+
+    private func unhideSystemCursorIfNeeded() {
+        guard isSystemCursorHidden else { return }
+        NSCursor.unhide()
+        isSystemCursorHidden = false
     }
 
     // MARK: - Public API
@@ -146,6 +203,9 @@ public class InputCaptureView: NSView {
 
     /// Display a pixel buffer (proxy to video view)
     public func displayPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
+        // Keep transform math aligned with actual decoded frame dimensions.
+        remoteVideoWidth = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
+        remoteVideoHeight = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
         videoView.displayPixelBuffer(pixelBuffer)
     }
 
@@ -181,45 +241,43 @@ public class InputCaptureView: NSView {
     public func updateCursorPosition(_ event: InputEvent) {
         guard event.type == .cursorPosition else { return }
 
+        let newType = event.cursorType
+        if newType != currentCursorType {
+            currentCursorType = newType
+            applyCursorVisual(createCursorVisual(type: newType))
+            updateCursorLayerVisibility()
+        }
+
         // Calculate the actual video display rect (accounting for aspect-ratio scaling)
         let videoRect = calculateVideoRect()
 
         // Cursor payload uses normalized top-left coordinates.
-        let localPoint = MouseCoordinateTransform.normalizedTopLeftToViewPoint(
+        let localHotSpotPoint = MouseCoordinateTransform.normalizedTopLeftToViewPoint(
             CGPoint(x: CGFloat(event.x), y: CGFloat(event.y)),
             in: videoRect
         )
-        let localX = localPoint.x
-        let localY = localPoint.y
+        let cursorOrigin: CGPoint
+        if let visual = currentCursorVisual {
+            cursorOrigin = MouseCoordinateTransform.cursorImageOriginForHotSpotPosition(
+                hotSpotPosition: localHotSpotPoint,
+                imageSize: visual.imageSize,
+                hotSpotTopLeft: visual.hotSpotTopLeft
+            )
+        } else {
+            cursorOrigin = localHotSpotPoint
+        }
 
         // Log cursor positions periodically
-        struct PositionLogger {
-            static var count = 0
-        }
-        PositionLogger.count += 1
-        if PositionLogger.count <= 5 || PositionLogger.count % 60 == 0 {
-            print("[Cursor] normalized=(\(String(format: "%.3f", event.x)), \(String(format: "%.3f", event.y))) -> local=(\(Int(localX)), \(Int(localY))) | videoRect=\(Int(videoRect.minX)),\(Int(videoRect.minY))-\(Int(videoRect.maxX)),\(Int(videoRect.maxY)) | remoteVideo=\(Int(remoteVideoWidth))x\(Int(remoteVideoHeight)) | viewBounds=\(Int(bounds.width))x\(Int(bounds.height))")
+        cursorLogCount += 1
+        if cursorLogCount <= 5 || cursorLogCount % 60 == 0 {
+            print("[Cursor] normalized=(\(String(format: "%.3f", event.x)), \(String(format: "%.3f", event.y))) -> hotSpot=(\(Int(localHotSpotPoint.x)), \(Int(localHotSpotPoint.y))) | videoRect=\(Int(videoRect.minX)),\(Int(videoRect.minY))-\(Int(videoRect.maxX)),\(Int(videoRect.maxY)) | remoteVideo=\(Int(remoteVideoWidth))x\(Int(remoteVideoHeight)) | viewBounds=\(Int(bounds.width))x\(Int(bounds.height))")
         }
 
-        // Update cursor layer position (disable implicit animations for smooth tracking)
+        // Position layer so that the rendered cursor hot spot matches host position.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        cursorLayer?.position = CGPoint(x: localX, y: localY)
+        cursorLayer?.position = cursorOrigin
         CATransaction.commit()
-
-        // Update cursor type if changed
-        let newType = event.cursorType
-        if newType != currentCursorType {
-            currentCursorType = newType
-            if newType == .hidden {
-                cursorLayer?.isHidden = true
-            } else {
-                cursorLayer?.isHidden = false
-                if let newImage = createCursorImage(type: newType) {
-                    cursorLayer?.contents = newImage
-                }
-            }
-        }
     }
 
     // MARK: - Responder Chain
@@ -252,20 +310,9 @@ public class InputCaptureView: NSView {
 
         print("[InputCapture] Capture started at view=(\(Int(viewPoint.x)), \(Int(viewPoint.y))) -> normalized=(\(String(format: "%.3f", virtualMouseX)), \(String(format: "%.3f", virtualMouseY)))")
 
-        // DEBUG: Don't hide system cursor so we can compare positions
-        // NSCursor.hide()
-
-        // Show local cursor layer (receives position from host)
-        cursorLayer?.isHidden = false
-
-        // DEBUG: Don't disassociate so we can see both cursors
-        // CGAssociateMouseAndMouseCursorPosition(0)
-
-        // Get current mouse location
-        if let window = window {
-            lastMouseLocation = NSEvent.mouseLocation
-            _ = window.convertPoint(fromScreen: lastMouseLocation)
-        }
+        // Keep this as absolute positioning and hide the local OS cursor to avoid dual cursors.
+        hideSystemCursorIfNeeded()
+        updateCursorLayerVisibility()
 
         // Show visual indicator (green border)
         showCapturedBorder()
@@ -278,14 +325,8 @@ public class InputCaptureView: NSView {
 
         isCaptured = false
 
-        // DEBUG: Cursor wasn't hidden
-        // NSCursor.unhide()
-
-        // Hide local cursor layer (system cursor takes over)
-        cursorLayer?.isHidden = true
-
-        // DEBUG: Wasn't disassociated
-        // CGAssociateMouseAndMouseCursorPosition(1)
+        unhideSystemCursorIfNeeded()
+        updateCursorLayerVisibility()
 
         // Remove visual indicator
         hideCapturedBorder()
@@ -424,9 +465,8 @@ public class InputCaptureView: NSView {
 
         if let sender = inputSender {
             // Log occasionally to avoid spam.
-            struct MoveCounter { static var count = 0 }
-            MoveCounter.count += 1
-            if MoveCounter.count <= 3 || MoveCounter.count % 60 == 0 {
+            sentMoveLogCount += 1
+            if sentMoveLogCount <= 3 || sentMoveLogCount % 60 == 0 {
                 print("[InputCapture] SENDING normalized pos: (\(String(format: "%.3f", virtualMouseX)), \(String(format: "%.3f", virtualMouseY)))")
             }
             sender(inputEvent)

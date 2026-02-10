@@ -34,9 +34,46 @@ public enum MouseCoordinateTransform {
         )
     }
 
+    /// Convert a cursor hot-spot location to the image origin in AppKit view coordinates.
+    ///
+    /// Inputs:
+    /// - `hotSpotPosition`: cursor hot-spot location in a bottom-left-origin view space.
+    /// - `imageSize`: cursor image size in points.
+    /// - `hotSpotTopLeft`: hot-spot offset in image space where `(0,0)` is top-left.
+    ///
+    /// Output:
+    /// - image origin (bottom-left) suitable for layer/view positioning.
+    public static func cursorImageOriginForHotSpotPosition(
+        hotSpotPosition: CGPoint,
+        imageSize: CGSize,
+        hotSpotTopLeft: CGPoint
+    ) -> CGPoint {
+        guard imageSize.width > 0, imageSize.height > 0 else { return hotSpotPosition }
+
+        let clampedHotSpotX = min(max(hotSpotTopLeft.x, 0), imageSize.width)
+        let clampedHotSpotYFromTop = min(max(hotSpotTopLeft.y, 0), imageSize.height)
+        let hotSpotYFromBottom = imageSize.height - clampedHotSpotYFromTop
+
+        return CGPoint(
+            x: hotSpotPosition.x - clampedHotSpotX,
+            y: hotSpotPosition.y - hotSpotYFromBottom
+        )
+    }
+
     /// Convert an AppKit global display point (bottom-left origin) to normalized top-left coordinates.
     public static func appKitDisplayPointToNormalizedTopLeft(_ point: CGPoint, displayBounds: CGRect) -> CGPoint {
         viewPointToNormalizedTopLeft(point, in: displayBounds)
+    }
+
+    /// Convert a CoreGraphics display point (top-left origin) to normalized top-left coordinates.
+    public static func cgDisplayPointToNormalizedTopLeft(_ point: CGPoint, displayBounds: CGRect) -> CGPoint {
+        guard displayBounds.width > 0, displayBounds.height > 0 else { return CGPoint(x: 0, y: 0) }
+
+        let clampedX = min(max(point.x, displayBounds.minX), displayBounds.maxX)
+        let clampedY = min(max(point.y, displayBounds.minY), displayBounds.maxY)
+        let normalizedX = (clampedX - displayBounds.minX) / displayBounds.width
+        let normalizedY = (clampedY - displayBounds.minY) / displayBounds.height
+        return clampNormalized(CGPoint(x: normalizedX, y: normalizedY))
     }
 
     /// Convert normalized top-left coordinates to CoreGraphics display coordinates (top-left origin).

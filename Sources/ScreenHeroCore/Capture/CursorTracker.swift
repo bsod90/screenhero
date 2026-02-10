@@ -12,7 +12,7 @@ public actor CursorTracker {
     /// Callback for cursor position updates
     private var onCursorUpdate: ((InputEvent) -> Void)?
 
-    /// Screen bounds for coordinate conversion
+    /// Display bounds in CoreGraphics global coordinates (origin at top-left)
     private var screenBounds: CGRect = .zero
 
     public init() {}
@@ -26,14 +26,14 @@ public actor CursorTracker {
     private var hasLoggedFirstCursor = false
 
     /// Start tracking cursor position.
-    /// - Parameter screenBounds: The display bounds being captured (in NSScreen/AppKit coordinates).
+    /// - Parameter screenBounds: The display bounds being captured (in CoreGraphics display coordinates).
     public func start(screenBounds: CGRect) {
         guard !isRunning else { return }
         isRunning = true
         self.screenBounds = screenBounds
 
         // Get initial position
-        lastPosition = NSEvent.mouseLocation
+        lastPosition = currentPointerLocation()
         print("[CursorTracker] Started with bounds: \(screenBounds)")
         print("[CursorTracker] Initial mouse position: \(lastPosition)")
 
@@ -51,8 +51,8 @@ public actor CursorTracker {
 
     private func runTrackingLoop() async {
         while isRunning {
-            // Get current cursor position in global screen coordinates
-            let globalPosition = NSEvent.mouseLocation
+            // Get current cursor position in CoreGraphics global coordinates.
+            let globalPosition = currentPointerLocation()
             let currentType = getCurrentCursorType()
 
             // Check if changed
@@ -63,19 +63,13 @@ public actor CursorTracker {
             if positionChanged || typeChanged {
                 lastPosition = globalPosition
 
-                // Convert from global screen coordinates to display-relative coordinates
-                // NSEvent.mouseLocation uses bottom-left origin for each screen
-                // screenBounds.origin gives us the display's position in global space
-                let relativeX = globalPosition.x - screenBounds.origin.x
-                let relativeY = globalPosition.y - screenBounds.origin.y
-
-                // Only send if cursor is within the captured display bounds
-                if relativeX >= 0 && relativeX <= screenBounds.width &&
-                   relativeY >= 0 && relativeY <= screenBounds.height {
+                // Only send if cursor is within the captured display bounds.
+                if globalPosition.x >= screenBounds.minX && globalPosition.x <= screenBounds.maxX &&
+                   globalPosition.y >= screenBounds.minY && globalPosition.y <= screenBounds.maxY {
                     lastCursorType = currentType
 
                     // Convert to normalized top-left coordinates for the wire format.
-                    let normalized = MouseCoordinateTransform.appKitDisplayPointToNormalizedTopLeft(
+                    let normalized = MouseCoordinateTransform.cgDisplayPointToNormalizedTopLeft(
                         globalPosition,
                         displayBounds: screenBounds
                     )
@@ -121,5 +115,9 @@ public actor CursorTracker {
         }
 
         return .arrow
+    }
+
+    private nonisolated func currentPointerLocation() -> CGPoint {
+        CGEvent(source: nil)?.location ?? .zero
     }
 }

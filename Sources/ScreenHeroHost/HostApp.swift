@@ -204,30 +204,17 @@ actor StreamingSession {
         log("[Session] Server started on port \(port)")
         log("[Session] Input server started on port \(inputPort)")
 
-        // Start cursor tracking for local cursor rendering
-        // Use NSScreen to get display bounds in AppKit coordinates (same as NSEvent.mouseLocation)
-        // This is essential for multi-monitor setups where displays have non-zero origins
+        // Start cursor tracking for local cursor rendering.
+        // Use the exact same CoreGraphics bounds that input injection uses to avoid edge drift.
         cursorTracker = CursorTracker()
         await cursorTracker?.setUpdateHandler { [weak self] cursorEvent in
             Task {
                 await self?.server?.broadcastInputEvent(cursorEvent)
             }
         }
-        // Find the NSScreen matching our display ID
-        let screenBounds: CGRect
-        if let screen = NSScreen.screens.first(where: {
-            let screenNumber = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
-            return screenNumber == display.displayID
-        }) {
-            screenBounds = screen.frame
-            log("[Session] Found matching NSScreen: \(screenBounds)")
-        } else {
-            // Fallback: use primary screen or create bounds from display dimensions
-            screenBounds = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: display.width, height: display.height)
-            log("[Session] WARNING: Could not find matching NSScreen, using fallback: \(screenBounds)")
-        }
-        await cursorTracker?.start(screenBounds: screenBounds)
-        log("[Session] Cursor tracking started (display bounds: \(screenBounds))")
+        let cursorBounds = CGDisplayBounds(display.displayID)
+        await cursorTracker?.start(screenBounds: cursorBounds)
+        log("[Session] Cursor tracking started (CG display bounds: \(cursorBounds))")
 
         // Start streaming with current config
         try await startPipeline()

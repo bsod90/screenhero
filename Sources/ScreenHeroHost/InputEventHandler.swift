@@ -25,6 +25,11 @@ public class InputEventHandler {
     /// Last accepted mouse move timestamp to drop stale out-of-order packets.
     private var lastMouseMoveTimestamp: UInt64 = 0
 
+    /// Current pressed mouse buttons for drag event synthesis.
+    private var isLeftButtonDown = false
+    private var isRightButtonDown = false
+    private var isMiddleButtonDown = false
+
     // MARK: - Initialization
 
     public init(displayID: CGDirectDisplayID? = nil) {
@@ -84,10 +89,12 @@ public class InputEventHandler {
             return handleMouseMove(normalizedX: event.x, normalizedY: event.y, timestamp: event.timestamp)
 
         case .mouseDown:
+            setButtonState(event.button, isDown: true)
             injectMouseButton(event, isDown: true)
             return nil
 
         case .mouseUp:
+            setButtonState(event.button, isDown: false)
             injectMouseButton(event, isDown: false)
             return nil
 
@@ -147,8 +154,17 @@ public class InputEventHandler {
         currentPosition.x = max(screenBounds.minX, min(screenBounds.maxX - 1, currentPosition.x))
         currentPosition.y = max(screenBounds.minY, min(screenBounds.maxY - 1, currentPosition.y))
 
-        // Inject the mouse move
-        injectMouseMove(to: currentPosition)
+        // Inject mouse motion; synthesize drag events while a button is held.
+        let moveInjection = Self.mouseMoveInjectionKind(
+            leftDown: isLeftButtonDown,
+            rightDown: isRightButtonDown,
+            middleDown: isMiddleButtonDown
+        )
+        injectMouseMove(
+            to: currentPosition,
+            eventType: moveInjection.type,
+            mouseButton: moveInjection.button
+        )
 
         // If hit edge, tell viewer to release capture
         if hitEdge {
@@ -166,13 +182,13 @@ public class InputEventHandler {
                currentPosition.y >= screenBounds.maxY - edgeMargin
     }
 
-    private func injectMouseMove(to point: CGPoint) {
+    private func injectMouseMove(to point: CGPoint, eventType: CGEventType, mouseButton: CGMouseButton) {
         // Point is already in CoreGraphics coordinates (origin at top-left)
         guard let event = CGEvent(
             mouseEventSource: nil,
-            mouseType: .mouseMoved,
+            mouseType: eventType,
             mouseCursorPosition: point,
-            mouseButton: .left
+            mouseButton: mouseButton
         ) else {
             print("[InputHandler] ERROR: Failed to create mouse move event")
             return
@@ -184,6 +200,30 @@ public class InputEventHandler {
         }
 
         event.post(tap: .cghidEventTap)
+    }
+
+    static func mouseMoveInjectionKind(
+        leftDown: Bool,
+        rightDown: Bool,
+        middleDown: Bool
+    ) -> (type: CGEventType, button: CGMouseButton) {
+        if leftDown { return (.leftMouseDragged, .left) }
+        if rightDown { return (.rightMouseDragged, .right) }
+        if middleDown { return (.otherMouseDragged, .center) }
+        return (.mouseMoved, .left)
+    }
+
+    private func setButtonState(_ button: InputEvent.MouseButton, isDown: Bool) {
+        switch button {
+        case .left:
+            isLeftButtonDown = isDown
+        case .right:
+            isRightButtonDown = isDown
+        case .middle:
+            isMiddleButtonDown = isDown
+        case .none:
+            break
+        }
     }
 
     // MARK: - Mouse Buttons

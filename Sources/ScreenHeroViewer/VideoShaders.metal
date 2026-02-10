@@ -5,6 +5,11 @@
 using namespace metal;
 
 // Vertex structure for fullscreen quad
+struct Uniforms {
+    float viewAspect;
+    float textureAspect;
+};
+
 struct VertexOut {
     float4 position [[position]];
     float2 texCoord;
@@ -12,7 +17,8 @@ struct VertexOut {
 
 // Fullscreen quad vertex shader
 // Uses vertex ID to generate positions without requiring a vertex buffer
-vertex VertexOut videoVertexShader(uint vertexID [[vertex_id]]) {
+vertex VertexOut videoVertexShader(uint vertexID [[vertex_id]],
+                                   constant Uniforms& uniforms [[buffer(0)]]) {
     // Generate fullscreen quad vertices
     // Vertex IDs 0-3 map to corners: bottom-left, bottom-right, top-left, top-right
     float2 positions[4] = {
@@ -30,8 +36,19 @@ vertex VertexOut videoVertexShader(uint vertexID [[vertex_id]]) {
         float2(1.0, 0.0)   // top-right
     };
 
+    float2 pos = positions[vertexID];
+
+    // Keep image/input mapping in sync with InputCaptureView aspect-fit math.
+    if (uniforms.textureAspect > uniforms.viewAspect) {
+        float scale = uniforms.viewAspect / uniforms.textureAspect;
+        pos.y *= scale;
+    } else {
+        float scale = uniforms.textureAspect / uniforms.viewAspect;
+        pos.x *= scale;
+    }
+
     VertexOut out;
-    out.position = float4(positions[vertexID], 0.0, 1.0);
+    out.position = float4(pos, 0.0, 1.0);
     out.texCoord = texCoords[vertexID];
     return out;
 }
