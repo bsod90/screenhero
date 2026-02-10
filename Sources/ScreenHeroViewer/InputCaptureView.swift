@@ -381,7 +381,11 @@ public class InputCaptureView: NSView {
             let inputEvent = InputEvent.mouseMove(normalizedX: Float(virtualMouseX), normalizedY: Float(virtualMouseY))
             inputSender?(inputEvent)
 
-            let clickEvent = InputEvent.mouseDown(button: .left)
+            let clickEvent = InputEvent.mouseDown(
+                button: .left,
+                normalizedX: Float(virtualMouseX),
+                normalizedY: Float(virtualMouseY)
+            )
             print("[InputCapture] SENDING initial position and mouseDown after capture")
             inputSender?(clickEvent)
             return
@@ -389,7 +393,11 @@ public class InputCaptureView: NSView {
 
         guard isCaptured && inputEnabled else { return }
 
-        let inputEvent = InputEvent.mouseDown(button: .left)
+        let inputEvent = InputEvent.mouseDown(
+            button: .left,
+            normalizedX: Float(virtualMouseX),
+            normalizedY: Float(virtualMouseY)
+        )
         print("[InputCapture] SENDING mouseDown")
         inputSender?(inputEvent)
     }
@@ -397,21 +405,33 @@ public class InputCaptureView: NSView {
     public override func mouseUp(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
 
-        let inputEvent = InputEvent.mouseUp(button: .left)
+        let inputEvent = InputEvent.mouseUp(
+            button: .left,
+            normalizedX: Float(virtualMouseX),
+            normalizedY: Float(virtualMouseY)
+        )
         inputSender?(inputEvent)
     }
 
     public override func rightMouseDown(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
 
-        let inputEvent = InputEvent.mouseDown(button: .right)
+        let inputEvent = InputEvent.mouseDown(
+            button: .right,
+            normalizedX: Float(virtualMouseX),
+            normalizedY: Float(virtualMouseY)
+        )
         inputSender?(inputEvent)
     }
 
     public override func rightMouseUp(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
 
-        let inputEvent = InputEvent.mouseUp(button: .right)
+        let inputEvent = InputEvent.mouseUp(
+            button: .right,
+            normalizedX: Float(virtualMouseX),
+            normalizedY: Float(virtualMouseY)
+        )
         inputSender?(inputEvent)
     }
 
@@ -419,14 +439,22 @@ public class InputCaptureView: NSView {
         guard isCaptured && inputEnabled else { return }
 
         // Button 2 is typically middle mouse
-        let inputEvent = InputEvent.mouseDown(button: .middle)
+        let inputEvent = InputEvent.mouseDown(
+            button: .middle,
+            normalizedX: Float(virtualMouseX),
+            normalizedY: Float(virtualMouseY)
+        )
         inputSender?(inputEvent)
     }
 
     public override func otherMouseUp(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
 
-        let inputEvent = InputEvent.mouseUp(button: .middle)
+        let inputEvent = InputEvent.mouseUp(
+            button: .middle,
+            normalizedX: Float(virtualMouseX),
+            normalizedY: Float(virtualMouseY)
+        )
         inputSender?(inputEvent)
     }
 

@@ -31,6 +31,20 @@ final class InputEventTests: XCTestCase {
         XCTAssertEqual(decoded?.y, 200)
     }
 
+    func testSerializeDeserializeMouseDownWithPointerPositionFlag() throws {
+        let event = InputEvent.mouseDown(button: .left, normalizedX: 0.72, normalizedY: 0.34)
+
+        let data = event.serialize()
+        let decoded = InputEvent.deserialize(from: data)
+
+        XCTAssertNotNil(decoded)
+        XCTAssertEqual(decoded?.type, .mouseDown)
+        XCTAssertEqual(decoded?.button, .left)
+        XCTAssertEqual(Double(decoded?.x ?? 0), 0.72, accuracy: 0.001)
+        XCTAssertEqual(Double(decoded?.y ?? 0), 0.34, accuracy: 0.001)
+        XCTAssertTrue(decoded?.modifiers.contains(.hasPointerPosition) ?? false)
+    }
+
     func testSerializeDeserializeMouseUp() throws {
         let event = InputEvent.mouseUp(button: .right)
 
@@ -40,6 +54,20 @@ final class InputEventTests: XCTestCase {
         XCTAssertNotNil(decoded)
         XCTAssertEqual(decoded?.type, .mouseUp)
         XCTAssertEqual(decoded?.button, .right)
+    }
+
+    func testSerializeDeserializeMouseUpWithPointerPositionFlag() throws {
+        let event = InputEvent.mouseUp(button: .left, normalizedX: 0.19, normalizedY: 0.88)
+
+        let data = event.serialize()
+        let decoded = InputEvent.deserialize(from: data)
+
+        XCTAssertNotNil(decoded)
+        XCTAssertEqual(decoded?.type, .mouseUp)
+        XCTAssertEqual(decoded?.button, .left)
+        XCTAssertEqual(Double(decoded?.x ?? 0), 0.19, accuracy: 0.001)
+        XCTAssertEqual(Double(decoded?.y ?? 0), 0.88, accuracy: 0.001)
+        XCTAssertTrue(decoded?.modifiers.contains(.hasPointerPosition) ?? false)
     }
 
     func testSerializeDeserializeScroll() throws {

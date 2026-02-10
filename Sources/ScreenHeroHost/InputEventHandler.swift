@@ -89,11 +89,13 @@ public class InputEventHandler {
             return handleMouseMove(normalizedX: event.x, normalizedY: event.y, timestamp: event.timestamp)
 
         case .mouseDown:
+            updatePositionFromPointerEventIfPresent(event)
             setButtonState(event.button, isDown: true)
             injectMouseButton(event, isDown: true)
             return nil
 
         case .mouseUp:
+            updatePositionFromPointerEventIfPresent(event)
             setButtonState(event.button, isDown: false)
             injectMouseButton(event, isDown: false)
             return nil
@@ -224,6 +226,24 @@ public class InputEventHandler {
         case .none:
             break
         }
+    }
+
+    private func updatePositionFromPointerEventIfPresent(_ event: InputEvent) {
+        guard let pointerPosition = Self.pointerPositionIfPresent(event, screenBounds: screenBounds) else { return }
+        currentPosition = pointerPosition
+    }
+
+    static func pointerPositionIfPresent(_ event: InputEvent, screenBounds: CGRect) -> CGPoint? {
+        guard event.modifiers.contains(.hasPointerPosition) else { return nil }
+
+        let normalized = CGPoint(x: CGFloat(event.x), y: CGFloat(event.y))
+        var point = MouseCoordinateTransform.normalizedTopLeftToCGDisplayPoint(
+            normalized,
+            displayBounds: screenBounds
+        )
+        point.x = max(screenBounds.minX, min(screenBounds.maxX - 1, point.x))
+        point.y = max(screenBounds.minY, min(screenBounds.maxY - 1, point.y))
+        return point
     }
 
     // MARK: - Mouse Buttons

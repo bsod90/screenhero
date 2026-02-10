@@ -49,6 +49,9 @@ public struct InputEvent: Sendable {
         public static let control = Modifiers(rawValue: 1 << 1)
         public static let option  = Modifiers(rawValue: 1 << 2)
         public static let command = Modifiers(rawValue: 1 << 3)
+
+        /// For mouse events, indicates that x/y contain an explicit normalized pointer position.
+        public static let hasPointerPosition = Modifiers(rawValue: 1 << 7)
     }
 
     public let type: EventType
@@ -231,9 +234,31 @@ extension InputEvent {
         InputEvent(type: .mouseDown, x: x, y: y, button: button)
     }
 
+    /// Create a mouse button down event with explicit normalized pointer position.
+    public static func mouseDown(button: MouseButton, normalizedX: Float, normalizedY: Float) -> InputEvent {
+        InputEvent(
+            type: .mouseDown,
+            x: normalizedX,
+            y: normalizedY,
+            button: button,
+            modifiers: [.hasPointerPosition]
+        )
+    }
+
     /// Create a mouse button up event
     public static func mouseUp(button: MouseButton, x: Float = 0, y: Float = 0) -> InputEvent {
         InputEvent(type: .mouseUp, x: x, y: y, button: button)
+    }
+
+    /// Create a mouse button up event with explicit normalized pointer position.
+    public static func mouseUp(button: MouseButton, normalizedX: Float, normalizedY: Float) -> InputEvent {
+        InputEvent(
+            type: .mouseUp,
+            x: normalizedX,
+            y: normalizedY,
+            button: button,
+            modifiers: [.hasPointerPosition]
+        )
     }
 
     /// Create a scroll event
