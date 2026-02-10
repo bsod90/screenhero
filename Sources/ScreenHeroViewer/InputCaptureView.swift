@@ -39,17 +39,16 @@ public class InputCaptureView: NSView {
     /// Cursor layer for local cursor rendering
     private var cursorLayer: CALayer?
 
-    /// Remote screen dimensions for coordinate mapping
-    private var remoteScreenWidth: CGFloat = 1920
-    private var remoteScreenHeight: CGFloat = 1080
+    /// Remote video dimensions (stream resolution) used for aspect-fit calculations
+    private var remoteVideoWidth: CGFloat = 1920
+    private var remoteVideoHeight: CGFloat = 1080
 
     /// Current cursor type
     private var currentCursorType: InputEvent.CursorType = .arrow
 
-    /// Virtual mouse position in STREAM coordinates (0 to remoteScreenWidth/Height)
-    /// This is accumulated locally and sent as absolute position to host
-    private var virtualMouseX: CGFloat = 0
-    private var virtualMouseY: CGFloat = 0
+    /// Virtual mouse position as normalized top-left coordinates (0...1)
+    private var virtualMouseX: CGFloat = 0.5
+    private var virtualMouseY: CGFloat = 0.5
 
     // MARK: - Initialization
 
@@ -157,41 +156,26 @@ public class InputCaptureView: NSView {
         }
     }
 
-    /// Set remote screen dimensions for cursor coordinate mapping
+    /// Set remote video dimensions for cursor coordinate mapping
+    public func setRemoteVideoSize(width: Int, height: Int) {
+        remoteVideoWidth = CGFloat(width)
+        remoteVideoHeight = CGFloat(height)
+    }
+
+    /// Backward-compatible wrapper; now interpreted as remote video size.
     public func setRemoteScreenSize(width: Int, height: Int) {
-        remoteScreenWidth = CGFloat(width)
-        remoteScreenHeight = CGFloat(height)
+        setRemoteVideoSize(width: width, height: height)
     }
 
     /// Calculate the actual video display rect within the view
     /// This accounts for aspect-ratio scaling (letterbox/pillarbox)
     private func calculateVideoRect() -> CGRect {
-        guard remoteScreenWidth > 0 && remoteScreenHeight > 0 else {
-            return bounds
-        }
-
-        let viewAspect = bounds.width / bounds.height
-        let videoAspect = remoteScreenWidth / remoteScreenHeight
-
-        var videoRect: CGRect
-
-        if videoAspect > viewAspect {
-            // Video is wider than view - letterbox (black bars top/bottom)
-            let videoHeight = bounds.width / videoAspect
-            let yOffset = (bounds.height - videoHeight) / 2
-            videoRect = CGRect(x: 0, y: yOffset, width: bounds.width, height: videoHeight)
-        } else {
-            // Video is taller than view - pillarbox (black bars left/right)
-            let videoWidth = bounds.height * videoAspect
-            let xOffset = (bounds.width - videoWidth) / 2
-            videoRect = CGRect(x: xOffset, y: 0, width: videoWidth, height: bounds.height)
-        }
-
-        return videoRect
+        MouseCoordinateTransform.aspectFitRect(
+            container: bounds,
+            contentWidth: remoteVideoWidth,
+            contentHeight: remoteVideoHeight
+        )
     }
-
-    /// Track first cursor position for logging
-    private var hasLoggedFirstCursorPosition = false
 
     /// Update cursor position from host (for local cursor rendering)
     public func updateCursorPosition(_ event: InputEvent) {
@@ -200,15 +184,13 @@ public class InputCaptureView: NSView {
         // Calculate the actual video display rect (accounting for aspect-ratio scaling)
         let videoRect = calculateVideoRect()
 
-        // Map remote coordinates to local view coordinates within the video rect
-        // Stream coords: Y=0 at TOP, increases DOWN
-        // AppKit view:   Y=0 at BOTTOM, increases UP
-        // Therefore: Y must be INVERTED
-        let scaleX = videoRect.width / remoteScreenWidth
-        let scaleY = videoRect.height / remoteScreenHeight
-
-        let localX = videoRect.minX + CGFloat(event.x) * scaleX
-        let localY = videoRect.maxY - CGFloat(event.y) * scaleY  // INVERT Y
+        // Cursor payload uses normalized top-left coordinates.
+        let localPoint = MouseCoordinateTransform.normalizedTopLeftToViewPoint(
+            CGPoint(x: CGFloat(event.x), y: CGFloat(event.y)),
+            in: videoRect
+        )
+        let localX = localPoint.x
+        let localY = localPoint.y
 
         // Log cursor positions periodically
         struct PositionLogger {
@@ -216,7 +198,7 @@ public class InputCaptureView: NSView {
         }
         PositionLogger.count += 1
         if PositionLogger.count <= 5 || PositionLogger.count % 60 == 0 {
-            print("[Cursor] remote=(\(Int(event.x)), \(Int(event.y))) -> local=(\(Int(localX)), \(Int(localY))) | videoRect=\(Int(videoRect.minX)),\(Int(videoRect.minY))-\(Int(videoRect.maxX)),\(Int(videoRect.maxY)) | remoteScreen=\(Int(remoteScreenWidth))x\(Int(remoteScreenHeight)) | viewBounds=\(Int(bounds.width))x\(Int(bounds.height))")
+            print("[Cursor] normalized=(\(String(format: "%.3f", event.x)), \(String(format: "%.3f", event.y))) -> local=(\(Int(localX)), \(Int(localY))) | videoRect=\(Int(videoRect.minX)),\(Int(videoRect.minY))-\(Int(videoRect.maxX)),\(Int(videoRect.maxY)) | remoteVideo=\(Int(remoteVideoWidth))x\(Int(remoteVideoHeight)) | viewBounds=\(Int(bounds.width))x\(Int(bounds.height))")
         }
 
         // Update cursor layer position (disable implicit animations for smooth tracking)
@@ -250,28 +232,12 @@ public class InputCaptureView: NSView {
 
     // MARK: - Mouse Capture
 
-    /// Convert a point in view coordinates to stream coordinates
-    /// AppKit view: Y=0 at BOTTOM, increases UP
-    /// Stream/CG:   Y=0 at TOP, increases DOWN
-    /// Therefore: Y must be INVERTED
-    private func viewToStreamCoordinates(_ viewPoint: CGPoint) -> (x: CGFloat, y: CGFloat) {
-        let videoRect = calculateVideoRect()
-
-        // Clamp to video rect
-        let clampedX = max(videoRect.minX, min(videoRect.maxX, viewPoint.x))
-        let clampedY = max(videoRect.minY, min(videoRect.maxY, viewPoint.y))
-
-        // Convert to 0-1 range within video rect
-        let normalizedX = (clampedX - videoRect.minX) / videoRect.width
-        let normalizedY = (clampedY - videoRect.minY) / videoRect.height
-
-        // Convert to stream coordinates
-        // X is the same direction
-        // Y is INVERTED: view top (high Y) = stream top (low Y)
-        let streamX = normalizedX * remoteScreenWidth
-        let streamY = (1.0 - normalizedY) * remoteScreenHeight  // INVERT Y
-
-        return (streamX, streamY)
+    /// Convert a point in view coordinates to normalized top-left coordinates.
+    private func viewToNormalizedCoordinates(_ viewPoint: CGPoint) -> CGPoint {
+        MouseCoordinateTransform.viewPointToNormalizedTopLeft(
+            viewPoint,
+            in: calculateVideoRect()
+        )
     }
 
     private func captureMouse(at viewPoint: CGPoint) {
@@ -279,12 +245,12 @@ public class InputCaptureView: NSView {
 
         isCaptured = true
 
-        // Initialize virtual mouse position from click location
-        let streamCoords = viewToStreamCoordinates(viewPoint)
-        virtualMouseX = streamCoords.x
-        virtualMouseY = streamCoords.y
+        // Initialize virtual mouse position from click location.
+        let normalized = viewToNormalizedCoordinates(viewPoint)
+        virtualMouseX = normalized.x
+        virtualMouseY = normalized.y
 
-        print("[InputCapture] Capture started at view=(\(Int(viewPoint.x)), \(Int(viewPoint.y))) -> stream=(\(Int(virtualMouseX)), \(Int(virtualMouseY)))")
+        print("[InputCapture] Capture started at view=(\(Int(viewPoint.x)), \(Int(viewPoint.y))) -> normalized=(\(String(format: "%.3f", virtualMouseX)), \(String(format: "%.3f", virtualMouseY)))")
 
         // DEBUG: Don't hide system cursor so we can compare positions
         // NSCursor.hide()
@@ -371,7 +337,7 @@ public class InputCaptureView: NSView {
             window?.makeFirstResponder(self)
 
             // Send mouseMove to set initial position, then mouseDown
-            let inputEvent = InputEvent.mouseMove(deltaX: Float(virtualMouseX), deltaY: Float(virtualMouseY))
+            let inputEvent = InputEvent.mouseMove(normalizedX: Float(virtualMouseX), normalizedY: Float(virtualMouseY))
             inputSender?(inputEvent)
 
             let clickEvent = InputEvent.mouseDown(button: .left)
@@ -426,36 +392,36 @@ public class InputCaptureView: NSView {
     public override func mouseMoved(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
 
-        // Get raw deltas
+        // Get raw deltas.
         let deltaX = CGFloat(event.deltaX)
         let deltaY = CGFloat(event.deltaY)
 
-        // Only process if there's actual movement
+        // Only process if there's actual movement.
         guard abs(deltaX) > 0.1 || abs(deltaY) > 0.1 else { return }
 
-        // Update virtual mouse position with deltas
-        // Note: deltaY is in AppKit coords (positive = up), but our stream coords have Y=0 at top
-        // So we ADD deltaY to move up (decrease stream Y) - wait no, let's think about this:
-        // - In stream coords, Y=0 is at TOP, Y increases DOWN
-        // - When user moves mouse UP, deltaY is POSITIVE (AppKit convention)
-        // - To move cursor UP in stream coords, we need to DECREASE Y
-        // - So: virtualMouseY -= deltaY
-        virtualMouseX += deltaX
-        virtualMouseY -= deltaY  // Invert Y for stream coordinates
+        let videoRect = calculateVideoRect()
+        let normalizedDelta = MouseCoordinateTransform.appKitDeltaToNormalizedTopLeft(
+            deltaX: deltaX,
+            deltaY: deltaY,
+            in: videoRect
+        )
 
-        // Clamp to valid range
-        virtualMouseX = max(0, min(remoteScreenWidth, virtualMouseX))
-        virtualMouseY = max(0, min(remoteScreenHeight, virtualMouseY))
+        // Update virtual mouse position with normalized deltas.
+        virtualMouseX += normalizedDelta.x
+        virtualMouseY += normalizedDelta.y
+        let clamped = MouseCoordinateTransform.clampNormalized(CGPoint(x: virtualMouseX, y: virtualMouseY))
+        virtualMouseX = clamped.x
+        virtualMouseY = clamped.y
 
-        // Send ABSOLUTE position (using the x,y fields of mouseMove)
-        let inputEvent = InputEvent.mouseMove(deltaX: Float(virtualMouseX), deltaY: Float(virtualMouseY))
+        // Send absolute normalized position.
+        let inputEvent = InputEvent.mouseMove(normalizedX: Float(virtualMouseX), normalizedY: Float(virtualMouseY))
 
         if let sender = inputSender {
             // Log occasionally to avoid spam
             struct MoveCounter { static var count = 0 }
             MoveCounter.count += 1
             if MoveCounter.count <= 3 || MoveCounter.count % 60 == 0 {
-                print("[InputCapture] SENDING absolute pos: (\(Int(virtualMouseX)), \(Int(virtualMouseY)))")
+                print("[InputCapture] SENDING normalized pos: (\(String(format: "%.3f", virtualMouseX)), \(String(format: "%.3f", virtualMouseY)))")
             }
             sender(inputEvent)
         }
@@ -476,16 +442,23 @@ public class InputCaptureView: NSView {
         updateAndSendAbsolutePosition(deltaX: CGFloat(event.deltaX), deltaY: CGFloat(event.deltaY))
     }
 
-    /// Helper to update virtual position and send absolute coordinates
+    /// Helper to update virtual position and send absolute normalized coordinates.
     private func updateAndSendAbsolutePosition(deltaX: CGFloat, deltaY: CGFloat) {
-        virtualMouseX += deltaX
-        virtualMouseY -= deltaY  // Invert Y for stream coordinates
+        let videoRect = calculateVideoRect()
+        let normalizedDelta = MouseCoordinateTransform.appKitDeltaToNormalizedTopLeft(
+            deltaX: deltaX,
+            deltaY: deltaY,
+            in: videoRect
+        )
 
-        // Clamp to valid range
-        virtualMouseX = max(0, min(remoteScreenWidth, virtualMouseX))
-        virtualMouseY = max(0, min(remoteScreenHeight, virtualMouseY))
+        virtualMouseX += normalizedDelta.x
+        virtualMouseY += normalizedDelta.y
 
-        let inputEvent = InputEvent.mouseMove(deltaX: Float(virtualMouseX), deltaY: Float(virtualMouseY))
+        let clamped = MouseCoordinateTransform.clampNormalized(CGPoint(x: virtualMouseX, y: virtualMouseY))
+        virtualMouseX = clamped.x
+        virtualMouseY = clamped.y
+
+        let inputEvent = InputEvent.mouseMove(normalizedX: Float(virtualMouseX), normalizedY: Float(virtualMouseY))
         inputSender?(inputEvent)
     }
 

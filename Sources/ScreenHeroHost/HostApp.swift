@@ -178,7 +178,6 @@ actor StreamingSession {
         // Create server (keeps running across config changes)
         server = UDPStreamServer(port: port, maxPacketSize: currentConfig.maxPacketSize)
         inputHandler = InputEventHandler(displayID: display.displayID)
-        inputHandler?.setStreamingResolution(width: currentConfig.width, height: currentConfig.height)
 
         await server?.setInputEventHandler { [inputHandler] inputEvent in
             return inputHandler?.handleEvent(inputEvent)
@@ -227,12 +226,8 @@ actor StreamingSession {
             screenBounds = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: display.width, height: display.height)
             log("[Session] WARNING: Could not find matching NSScreen, using fallback: \(screenBounds)")
         }
-        await cursorTracker?.start(
-            screenBounds: screenBounds,
-            streamingWidth: currentConfig.width,
-            streamingHeight: currentConfig.height
-        )
-        log("[Session] Cursor tracking started (display bounds: \(screenBounds), streaming: \(currentConfig.width)x\(currentConfig.height))")
+        await cursorTracker?.start(screenBounds: screenBounds)
+        log("[Session] Cursor tracking started (display bounds: \(screenBounds))")
 
         // Start streaming with current config
         try await startPipeline()
@@ -298,10 +293,6 @@ actor StreamingSession {
 
         // Update server config
         await server?.setCurrentConfig(currentConfig)
-
-        // Update cursor tracker and input handler with new streaming resolution
-        await cursorTracker?.updateStreamingResolution(width: currentConfig.width, height: currentConfig.height)
-        inputHandler?.setStreamingResolution(width: currentConfig.width, height: currentConfig.height)
 
         // Restart pipeline with new config
         do {

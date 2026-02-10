@@ -251,21 +251,16 @@ struct ViewerCLI {
             )
             await client.setRequestedConfig(requestedConfig)
 
-            // Log when server confirms config and set remote screen dimensions
+            // Log confirmed config and update remote video size for aspect-fit mapping.
             await client.setConfigHandler { serverConfig in
                 log("[Config] Server confirmed: \(serverConfig.width)x\(serverConfig.height) \(serverConfig.codec) \(serverConfig.bitrate/1_000_000)Mbps k=\(serverConfig.keyframeInterval)")
 
-                // Set remote screen dimensions for cursor coordinate mapping
-                // Use logical display dimensions (points), not native pixels, because
-                // cursor positions are sent in logical coordinates
-                if let displayWidth = serverConfig.serverDisplayWidth,
-                   let displayHeight = serverConfig.serverDisplayHeight {
-                    log("[Config] Remote display: \(displayWidth)x\(displayHeight) (logical)")
-                    CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
-                        inputCaptureView.setRemoteScreenSize(width: displayWidth, height: displayHeight)
-                    }
-                    CFRunLoopWakeUp(CFRunLoopGetMain())
+                // Input mapping uses normalized coordinates, but the viewer still needs
+                // the stream aspect ratio to compute the displayed video rect.
+                CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                    inputCaptureView.setRemoteVideoSize(width: serverConfig.width, height: serverConfig.height)
                 }
+                CFRunLoopWakeUp(CFRunLoopGetMain())
             }
 
             // Handle cursor position events from host (sent via main video connection)
@@ -312,7 +307,7 @@ struct ViewerCLI {
                         struct MoveCounter { static var count = 0 }
                         MoveCounter.count += 1
                         if MoveCounter.count <= 3 {
-                            log("[Input] Callback: mouseMove dx=\(inputEvent.x) dy=\(inputEvent.y)")
+                            log("[Input] Callback: mouseMove normalizedX=\(inputEvent.x) normalizedY=\(inputEvent.y)")
                         }
                     } else {
                         log("[Input] Callback: \(inputEvent.type)")

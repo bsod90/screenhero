@@ -15,10 +15,6 @@ public actor CursorTracker {
     /// Screen bounds for coordinate conversion
     private var screenBounds: CGRect = .zero
 
-    /// Streaming resolution (for scaling coordinates)
-    private var streamingWidth: CGFloat = 1920
-    private var streamingHeight: CGFloat = 1080
-
     public init() {}
 
     /// Set the callback for cursor updates
@@ -29,21 +25,16 @@ public actor CursorTracker {
     /// Track first cursor send for logging
     private var hasLoggedFirstCursor = false
 
-    /// Start tracking cursor position
-    /// - Parameters:
-    ///   - screenBounds: The display bounds being captured (in NSScreen coordinates)
-    ///   - streamingWidth: The width of the streaming resolution (for coordinate scaling)
-    ///   - streamingHeight: The height of the streaming resolution (for coordinate scaling)
-    public func start(screenBounds: CGRect, streamingWidth: Int, streamingHeight: Int) {
+    /// Start tracking cursor position.
+    /// - Parameter screenBounds: The display bounds being captured (in NSScreen/AppKit coordinates).
+    public func start(screenBounds: CGRect) {
         guard !isRunning else { return }
         isRunning = true
         self.screenBounds = screenBounds
-        self.streamingWidth = CGFloat(streamingWidth)
-        self.streamingHeight = CGFloat(streamingHeight)
 
         // Get initial position
         lastPosition = NSEvent.mouseLocation
-        print("[CursorTracker] Started with bounds: \(screenBounds), streaming: \(streamingWidth)x\(streamingHeight)")
+        print("[CursorTracker] Started with bounds: \(screenBounds)")
         print("[CursorTracker] Initial mouse position: \(lastPosition)")
 
         updateTask = Task { [weak self] in
@@ -56,15 +47,6 @@ public actor CursorTracker {
         isRunning = false
         updateTask?.cancel()
         updateTask = nil
-    }
-
-    /// Update streaming resolution (call when config changes)
-    public func updateStreamingResolution(width: Int, height: Int) {
-        let oldWidth = streamingWidth
-        let oldHeight = streamingHeight
-        streamingWidth = CGFloat(width)
-        streamingHeight = CGFloat(height)
-        print("[CursorTracker] Streaming resolution updated: \(Int(oldWidth))x\(Int(oldHeight)) -> \(width)x\(height)")
     }
 
     private func runTrackingLoop() async {
@@ -92,23 +74,21 @@ public actor CursorTracker {
                    relativeY >= 0 && relativeY <= screenBounds.height {
                     lastCursorType = currentType
 
-                    // Scale from display space to streaming space
-                    // This is needed because the video is scaled from display resolution to streaming resolution
-                    // NSEvent.mouseLocation uses AppKit coords (Y=0 at bottom)
-                    // Stream uses CG coords (Y=0 at top)
-                    // Therefore: Y must be INVERTED
-                    let streamX = relativeX * streamingWidth / screenBounds.width
-                    let streamY = (screenBounds.height - relativeY) * streamingHeight / screenBounds.height  // INVERT Y
+                    // Convert to normalized top-left coordinates for the wire format.
+                    let normalized = MouseCoordinateTransform.appKitDisplayPointToNormalizedTopLeft(
+                        globalPosition,
+                        displayBounds: screenBounds
+                    )
 
                     // Log first cursor update
                     if !hasLoggedFirstCursor {
-                        print("[CursorTracker] First cursor: global=\(globalPosition), relative=(\(relativeX), \(relativeY)), stream=(\(streamX), \(streamY))")
+                        print("[CursorTracker] First cursor: global=\(globalPosition), normalized=(\(String(format: "%.3f", normalized.x)), \(String(format: "%.3f", normalized.y)))")
                         hasLoggedFirstCursor = true
                     }
 
                     let event = InputEvent.cursorPosition(
-                        x: Float(streamX),
-                        y: Float(streamY),
+                        x: Float(normalized.x),
+                        y: Float(normalized.y),
                         cursorType: currentType
                     )
 

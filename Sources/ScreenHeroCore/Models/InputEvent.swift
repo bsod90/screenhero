@@ -53,8 +53,8 @@ public struct InputEvent: Sendable {
 
     public let type: EventType
     public let timestamp: UInt64  // Nanoseconds since epoch
-    public let x: Float           // Mouse X position or scroll delta X
-    public let y: Float           // Mouse Y position or scroll delta Y
+    public let x: Float           // mouseMove: normalized X (0...1), scroll: deltaX
+    public let y: Float           // mouseMove: normalized Y (0...1), scroll: deltaY
     public let button: MouseButton
     public let keyCode: UInt16    // CGKeyCode for keyboard events
     public let modifiers: Modifiers
@@ -78,7 +78,7 @@ public struct InputEvent: Sendable {
     }
 
     /// Create a cursor position update event (host -> viewer)
-    /// x, y are absolute screen coordinates
+    /// x, y are absolute normalized top-left coordinates (0...1)
     /// cursorType indicates what cursor image to show
     public static func cursorPosition(x: Float, y: Float, cursorType: CursorType = .arrow) -> InputEvent {
         InputEvent(
@@ -216,9 +216,14 @@ public struct InputEvent: Sendable {
 // MARK: - Convenience initializers
 
 extension InputEvent {
-    /// Create a mouse move event with delta movement
+    /// Create a mouse move event with absolute normalized position.
+    public static func mouseMove(normalizedX: Float, normalizedY: Float) -> InputEvent {
+        InputEvent(type: .mouseMove, x: normalizedX, y: normalizedY)
+    }
+
+    /// Backward-compatible alias. The payload is interpreted as absolute normalized position.
     public static func mouseMove(deltaX: Float, deltaY: Float) -> InputEvent {
-        InputEvent(type: .mouseMove, x: deltaX, y: deltaY)
+        mouseMove(normalizedX: deltaX, normalizedY: deltaY)
     }
 
     /// Create a mouse button down event

@@ -22,13 +22,8 @@ public class InputEventHandler {
     /// Whether we've logged the first event (to avoid spam)
     private var hasLoggedFirstEvent = false
 
-    /// Streaming resolution (for scaling mouse deltas)
-    private var streamingWidth: CGFloat = 1920
-    private var streamingHeight: CGFloat = 1080
-
-    /// Scale factors for mouse deltas (display/streaming ratio)
-    private var scaleX: CGFloat = 1.0
-    private var scaleY: CGFloat = 1.0
+    /// Last accepted mouse move timestamp to drop stale out-of-order packets.
+    private var lastMouseMoveTimestamp: UInt64 = 0
 
     // MARK: - Initialization
 
@@ -47,19 +42,6 @@ public class InputEventHandler {
 
         // Check accessibility permissions
         checkAccessibilityPermissions()
-    }
-
-    /// Update streaming resolution and recalculate scale factors
-    public func setStreamingResolution(width: Int, height: Int) {
-        streamingWidth = CGFloat(width)
-        streamingHeight = CGFloat(height)
-
-        // Scale factors: display / streaming
-        // If streaming is larger than display, deltas need to be scaled down
-        scaleX = screenBounds.width / streamingWidth
-        scaleY = screenBounds.height / streamingHeight
-
-        print("[InputHandler] Streaming: \(width)x\(height), Scale: (\(scaleX), \(scaleY))")
     }
 
     private func checkAccessibilityPermissions() {
@@ -87,11 +69,10 @@ public class InputEventHandler {
 
     /// Handle an input event and optionally return a response event
     public func handleEvent(_ event: InputEvent) -> InputEvent? {
-        // Debug log for all non-move events, and periodic move events
+        // Debug log for all non-move events, and the first move.
         if event.type == .mouseMove {
-            // Log mouse moves periodically to avoid spam
-            if !hasLoggedFirstEvent || (abs(event.x) > 5 || abs(event.y) > 5) {
-                print("[InputHandler] mouseMove: dx=\(event.x), dy=\(event.y) -> pos=(\(currentPosition.x + CGFloat(event.x)), \(currentPosition.y + CGFloat(event.y)))")
+            if !hasLoggedFirstEvent {
+                print("[InputHandler] mouseMove: normalized=(\(String(format: "%.3f", event.x)), \(String(format: "%.3f", event.y)))")
                 hasLoggedFirstEvent = true
             }
         } else {
@@ -100,7 +81,7 @@ public class InputEventHandler {
 
         switch event.type {
         case .mouseMove:
-            return handleMouseMove(deltaX: event.x, deltaY: event.y)
+            return handleMouseMove(normalizedX: event.x, normalizedY: event.y, timestamp: event.timestamp)
 
         case .mouseDown:
             injectMouseButton(event, isDown: true)
@@ -137,28 +118,27 @@ public class InputEventHandler {
     /// Count of mouse moves received (for warm-up period)
     private var mouseMoveCount = 0
 
-    private func handleMouseMove(deltaX: Float, deltaY: Float) -> InputEvent? {
+    private func handleMouseMove(normalizedX: Float, normalizedY: Float, timestamp: UInt64) -> InputEvent? {
+        // Ignore stale or out-of-order events to prevent cursor jumps backwards.
+        guard timestamp >= lastMouseMoveTimestamp else { return nil }
+        lastMouseMoveTimestamp = timestamp
+
         mouseMoveCount += 1
 
-        // ABSOLUTE POSITIONING: x, y are absolute coordinates in STREAM space
-        // Convert from stream coordinates to screen coordinates
-        let streamX = CGFloat(deltaX)
-        let streamY = CGFloat(deltaY)
+        let normalized = CGPoint(x: CGFloat(normalizedX), y: CGFloat(normalizedY))
+        let screenPoint = MouseCoordinateTransform.normalizedTopLeftToCGDisplayPoint(
+            normalized,
+            displayBounds: screenBounds
+        )
 
-        // Convert from stream space to screen space
-        // Stream coords: (0,0) at top-left, (streamWidth, streamHeight) at bottom-right
-        // Screen coords: screenBounds.origin at top-left (in CG space)
-        let screenX = screenBounds.minX + (streamX / streamingWidth) * screenBounds.width
-        let screenY = screenBounds.minY + (streamY / streamingHeight) * screenBounds.height
-
-        // Log first few moves to help debug
+        // Log first few moves to help debug.
         if mouseMoveCount <= 3 {
-            print("[InputHandler] Move #\(mouseMoveCount): stream=(\(Int(streamX)), \(Int(streamY))) -> screen=(\(Int(screenX)), \(Int(screenY)))")
-            print("[InputHandler]   streamRes=\(Int(streamingWidth))x\(Int(streamingHeight)), screenBounds=\(screenBounds)")
+            print("[InputHandler] Move #\(mouseMoveCount): normalized=(\(String(format: "%.3f", normalized.x)), \(String(format: "%.3f", normalized.y))) -> screen=(\(Int(screenPoint.x)), \(Int(screenPoint.y)))")
+            print("[InputHandler]   screenBounds=\(screenBounds)")
         }
 
-        // Update current position
-        currentPosition = CGPoint(x: screenX, y: screenY)
+        // Update current position.
+        currentPosition = screenPoint
 
         // Check edge hit (after warm-up period)
         let hitEdge = mouseMoveCount > 5 && checkEdgeHit()
