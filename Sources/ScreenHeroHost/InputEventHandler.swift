@@ -39,13 +39,15 @@ public class InputEventHandler {
     /// Whether host is in relative drag mode (target app hidden/locked cursor).
     private var isRelativeDragMode = false
     private var relativeDragAnchor: CGPoint?
-    private var pointerMismatchStreak = 0
+    private var stuckPointerStreak = 0
+    private var lastObservedHostPointer: CGPoint?
 
     /// Shared event source so injected events carry coherent system state.
     private let eventSource: CGEventSource?
 
-    private static let relativeDragPointerDriftThreshold: CGFloat = 12
     private static let relativeDragActivationStreak = 3
+    private static let lockDetectionInputDeltaThreshold: CGFloat = 1.0
+    private static let lockDetectionHostTravelThreshold: CGFloat = 0.5
 
     // MARK: - Initialization
 
@@ -182,33 +184,42 @@ public class InputEventHandler {
 
         let anyButtonDown = isLeftButtonDown || isRightButtonDown || isMiddleButtonDown
         let hostPointer = currentPointerLocation() ?? currentPosition
-        let pointerDrift = hypot(hostPointer.x - currentPosition.x, hostPointer.y - currentPosition.y)
+        let inputTravel = hypot(CGFloat(inputDelta.dx), CGFloat(inputDelta.dy))
+        let hostTravel: CGFloat
+        if let previousHostPointer = lastObservedHostPointer {
+            hostTravel = hypot(hostPointer.x - previousHostPointer.x, hostPointer.y - previousHostPointer.y)
+        } else {
+            hostTravel = 0
+        }
 
         if anyButtonDown {
-            if pointerDrift >= Self.relativeDragPointerDriftThreshold {
-                pointerMismatchStreak += 1
+            if inputTravel >= Self.lockDetectionInputDeltaThreshold &&
+                hostTravel <= Self.lockDetectionHostTravelThreshold {
+                stuckPointerStreak += 1
             } else {
-                pointerMismatchStreak = 0
+                stuckPointerStreak = 0
             }
 
             let shouldUseRelativeDrag = Self.shouldUseRelativeDragMode(
                 anyButtonDown: anyButtonDown,
-                pointerDrift: pointerDrift,
-                mismatchStreak: pointerMismatchStreak
+                inputTravel: inputTravel,
+                hostTravel: hostTravel,
+                stuckStreak: stuckPointerStreak
             )
             if shouldUseRelativeDrag && !isRelativeDragMode {
                 isRelativeDragMode = true
                 relativeDragAnchor = hostPointer
-                print("[InputHandler] Entered relative drag mode (pointer drift: \(Int(pointerDrift)))")
+                print("[InputHandler] Entered relative drag mode (inputTravel=\(String(format: "%.2f", inputTravel)), hostTravel=\(String(format: "%.2f", hostTravel)))")
             }
         } else {
-            pointerMismatchStreak = 0
+            stuckPointerStreak = 0
             if isRelativeDragMode {
                 isRelativeDragMode = false
                 relativeDragAnchor = nil
                 print("[InputHandler] Exited relative drag mode")
             }
         }
+        lastObservedHostPointer = hostPointer
 
         // Inject mouse motion; synthesize drag events while a button is held.
         let moveInjection = Self.mouseMoveInjectionKind(
@@ -331,12 +342,14 @@ public class InputEventHandler {
 
     static func shouldUseRelativeDragMode(
         anyButtonDown: Bool,
-        pointerDrift: CGFloat,
-        mismatchStreak: Int
+        inputTravel: CGFloat,
+        hostTravel: CGFloat,
+        stuckStreak: Int
     ) -> Bool {
         anyButtonDown &&
-        pointerDrift >= relativeDragPointerDriftThreshold &&
-        mismatchStreak >= relativeDragActivationStreak
+        inputTravel >= lockDetectionInputDeltaThreshold &&
+        hostTravel <= lockDetectionHostTravelThreshold &&
+        stuckStreak >= relativeDragActivationStreak
     }
 
     static func effectiveClickState(for event: InputEvent) -> Int64 {
@@ -367,7 +380,8 @@ public class InputEventHandler {
         if !isLeftButtonDown && !isRightButtonDown && !isMiddleButtonDown {
             isRelativeDragMode = false
             relativeDragAnchor = nil
-            pointerMismatchStreak = 0
+            stuckPointerStreak = 0
+            lastObservedHostPointer = nil
         }
     }
 
@@ -441,7 +455,8 @@ public class InputEventHandler {
         lastInputPosition = currentPosition
         isRelativeDragMode = false
         relativeDragAnchor = nil
-        pointerMismatchStreak = 0
+        stuckPointerStreak = 0
+        lastObservedHostPointer = nil
     }
 
     /// Get current virtual mouse position

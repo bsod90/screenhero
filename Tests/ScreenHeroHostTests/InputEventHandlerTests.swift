@@ -118,12 +118,13 @@ final class InputEventHandlerTests: XCTestCase {
         XCTAssertEqual(InputEventHandler.effectiveClickState(for: event), 1)
     }
 
-    func testShouldUseRelativeDragModeWhenDriftStreakCrossesThreshold() {
+    func testShouldUseRelativeDragModeWhenPointerIsStuckDuringInputMovement() {
         XCTAssertTrue(
             InputEventHandler.shouldUseRelativeDragMode(
                 anyButtonDown: true,
-                pointerDrift: 20,
-                mismatchStreak: 3
+                inputTravel: 8,
+                hostTravel: 0.1,
+                stuckStreak: 3
             )
         )
     }
@@ -132,18 +133,31 @@ final class InputEventHandlerTests: XCTestCase {
         XCTAssertFalse(
             InputEventHandler.shouldUseRelativeDragMode(
                 anyButtonDown: false,
-                pointerDrift: 20,
-                mismatchStreak: 3
+                inputTravel: 8,
+                hostTravel: 0.1,
+                stuckStreak: 3
             )
         )
     }
 
-    func testShouldNotUseRelativeDragModeWhenDriftIsSmall() {
+    func testShouldNotUseRelativeDragModeWhenInputMovementIsSmall() {
         XCTAssertFalse(
             InputEventHandler.shouldUseRelativeDragMode(
                 anyButtonDown: true,
-                pointerDrift: 4,
-                mismatchStreak: 10
+                inputTravel: 0.2,
+                hostTravel: 0.0,
+                stuckStreak: 10
+            )
+        )
+    }
+
+    func testShouldNotUseRelativeDragModeWhenHostPointerIsMoving() {
+        XCTAssertFalse(
+            InputEventHandler.shouldUseRelativeDragMode(
+                anyButtonDown: true,
+                inputTravel: 8,
+                hostTravel: 4,
+                stuckStreak: 10
             )
         )
     }
@@ -152,8 +166,9 @@ final class InputEventHandlerTests: XCTestCase {
         XCTAssertFalse(
             InputEventHandler.shouldUseRelativeDragMode(
                 anyButtonDown: true,
-                pointerDrift: 20,
-                mismatchStreak: 2
+                inputTravel: 8,
+                hostTravel: 0.1,
+                stuckStreak: 2
             )
         )
     }
