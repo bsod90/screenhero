@@ -22,6 +22,9 @@ public actor CursorTracker {
         onCursorUpdate = handler
     }
 
+    /// Track first cursor send for logging
+    private var hasLoggedFirstCursor = false
+
     /// Start tracking cursor position
     public func start(screenBounds: CGRect) {
         guard !isRunning else { return }
@@ -30,6 +33,8 @@ public actor CursorTracker {
 
         // Get initial position
         lastPosition = NSEvent.mouseLocation
+        print("[CursorTracker] Started with bounds: \(screenBounds)")
+        print("[CursorTracker] Initial mouse position: \(lastPosition)")
 
         updateTask = Task { [weak self] in
             await self?.runTrackingLoop()
@@ -45,28 +50,43 @@ public actor CursorTracker {
 
     private func runTrackingLoop() async {
         while isRunning {
-            // Get current cursor position
-            let currentPosition = NSEvent.mouseLocation
+            // Get current cursor position in global screen coordinates
+            let globalPosition = NSEvent.mouseLocation
             let currentType = getCurrentCursorType()
 
             // Check if changed
-            let positionChanged = abs(currentPosition.x - lastPosition.x) > 0.5 ||
-                                  abs(currentPosition.y - lastPosition.y) > 0.5
+            let positionChanged = abs(globalPosition.x - lastPosition.x) > 0.5 ||
+                                  abs(globalPosition.y - lastPosition.y) > 0.5
             let typeChanged = currentType != lastCursorType
 
             if positionChanged || typeChanged {
-                lastPosition = currentPosition
-                lastCursorType = currentType
+                lastPosition = globalPosition
 
-                // Send coordinates as-is (bottom-left origin, same as NSView/CALayer)
-                // NSEvent.mouseLocation and NSView both use bottom-left origin
-                let event = InputEvent.cursorPosition(
-                    x: Float(currentPosition.x),
-                    y: Float(currentPosition.y),
-                    cursorType: currentType
-                )
+                // Convert from global screen coordinates to display-relative coordinates
+                // NSEvent.mouseLocation uses bottom-left origin for each screen
+                // screenBounds.origin gives us the display's position in global space
+                let relativeX = globalPosition.x - screenBounds.origin.x
+                let relativeY = globalPosition.y - screenBounds.origin.y
 
-                onCursorUpdate?(event)
+                // Only send if cursor is within the captured display bounds
+                if relativeX >= 0 && relativeX <= screenBounds.width &&
+                   relativeY >= 0 && relativeY <= screenBounds.height {
+                    lastCursorType = currentType
+
+                    // Log first cursor update
+                    if !hasLoggedFirstCursor {
+                        print("[CursorTracker] First cursor position: global=\(globalPosition), relative=(\(relativeX), \(relativeY))")
+                        hasLoggedFirstCursor = true
+                    }
+
+                    let event = InputEvent.cursorPosition(
+                        x: Float(relativeX),
+                        y: Float(relativeY),
+                        cursorType: currentType
+                    )
+
+                    onCursorUpdate?(event)
+                }
             }
 
             // Poll at 120Hz for smooth cursor tracking

@@ -177,7 +177,7 @@ actor StreamingSession {
 
         // Create server (keeps running across config changes)
         server = UDPStreamServer(port: port, maxPacketSize: currentConfig.maxPacketSize)
-        inputHandler = InputEventHandler()
+        inputHandler = InputEventHandler(displayID: display.displayID)
 
         await server?.setInputEventHandler { [inputHandler] inputEvent in
             return inputHandler?.handleEvent(inputEvent)
@@ -205,17 +205,29 @@ actor StreamingSession {
         log("[Session] Input server started on port \(inputPort)")
 
         // Start cursor tracking for local cursor rendering
-        // Use logical (point) dimensions, not native pixels, because NSEvent.mouseLocation
-        // returns coordinates in logical points
+        // Use NSScreen to get display bounds in AppKit coordinates (same as NSEvent.mouseLocation)
+        // This is essential for multi-monitor setups where displays have non-zero origins
         cursorTracker = CursorTracker()
         await cursorTracker?.setUpdateHandler { [weak self] cursorEvent in
             Task {
                 await self?.server?.broadcastInputEvent(cursorEvent)
             }
         }
-        let screenBounds = CGRect(x: 0, y: 0, width: display.width, height: display.height)
+        // Find the NSScreen matching our display ID
+        let screenBounds: CGRect
+        if let screen = NSScreen.screens.first(where: {
+            let screenNumber = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+            return screenNumber == display.displayID
+        }) {
+            screenBounds = screen.frame
+            log("[Session] Found matching NSScreen: \(screenBounds)")
+        } else {
+            // Fallback: use primary screen or create bounds from display dimensions
+            screenBounds = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: display.width, height: display.height)
+            log("[Session] WARNING: Could not find matching NSScreen, using fallback: \(screenBounds)")
+        }
         await cursorTracker?.start(screenBounds: screenBounds)
-        log("[Session] Cursor tracking started for local rendering (bounds: \(display.width)x\(display.height))")
+        log("[Session] Cursor tracking started (display bounds: \(screenBounds))")
 
         // Start streaming with current config
         try await startPipeline()

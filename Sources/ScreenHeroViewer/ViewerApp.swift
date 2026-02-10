@@ -304,10 +304,18 @@ struct ViewerCLI {
                 log("[Input] Connected to input server!")
 
                 // Enable input capture with sender callback
+                log("[Input] Setting up input sender callback")
                 inputCaptureView.enableInput { inputEvent in
-                    // Log that callback was triggered
-                    if inputEvent.type != .mouseMove {
-                        log("[Viewer] Input callback triggered: \(inputEvent.type)")
+                    // Log all events for debugging
+                    if inputEvent.type == .mouseMove {
+                        // Only log first few mouse moves to avoid spam
+                        struct MoveCounter { static var count = 0 }
+                        MoveCounter.count += 1
+                        if MoveCounter.count <= 3 {
+                            log("[Input] Callback: mouseMove dx=\(inputEvent.x) dy=\(inputEvent.y)")
+                        }
+                    } else {
+                        log("[Input] Callback: \(inputEvent.type)")
                     }
                     Task {
                         await inputClient.sendInputEvent(inputEvent)

@@ -24,16 +24,17 @@ public class InputEventHandler {
 
     // MARK: - Initialization
 
-    public init() {
-        // Get main display bounds in CoreGraphics coordinates
-        let mainDisplayID = CGMainDisplayID()
-        let displayBounds = CGDisplayBounds(mainDisplayID)
+    public init(displayID: CGDirectDisplayID? = nil) {
+        // Get display bounds in CoreGraphics coordinates
+        let targetDisplayID = displayID ?? CGMainDisplayID()
+        let displayBounds = CGDisplayBounds(targetDisplayID)
         screenBounds = displayBounds
 
         // Start at center of screen
         currentPosition = CGPoint(x: displayBounds.midX, y: displayBounds.midY)
 
-        print("[InputHandler] Initialized with screen bounds: \(screenBounds)")
+        print("[InputHandler] Initialized for display \(targetDisplayID)")
+        print("[InputHandler] Screen bounds: \(screenBounds)")
         print("[InputHandler] Starting position: \(currentPosition)")
 
         // Check accessibility permissions

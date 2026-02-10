@@ -1395,49 +1395,50 @@ public actor UDPInputClient {
             using: params
         )
 
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            var resumed = false
-            connection?.stateUpdateHandler = { [weak self] state in
-                guard let self = self else { return }
-                switch state {
-                case .ready:
-                    Task {
-                        await self.setActive(true)
-                        await self.startReceivingAsync()
-                        netLog("[UDPInputClient] Connected to \(self.serverHost):\(self.serverPort)")
-                        if !resumed {
-                            resumed = true
-                            cont.resume()
-                        }
-                    }
-                case .failed(let error):
-                    Task { await self.setActive(false) }
-                    if !resumed {
-                        resumed = true
-                        cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
-                    }
-                case .cancelled:
-                    Task { await self.setActive(false) }
-                default:
-                    break
-                }
+        connection?.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            Task {
+                await self.handleState(state)
             }
-            connection?.start(queue: queue)
         }
+
+        connection?.start(queue: queue)
+
+        // For UDP, connection becomes ready almost immediately
+        // Wait briefly then check state
+        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+
+        if !isActive {
+            // Try to give it more time if not ready yet
+            try await Task.sleep(nanoseconds: 200_000_000) // 200ms more
+        }
+
+        if !isActive {
+            throw NetworkTransportError.connectionFailed("UDP connection did not become ready")
+        }
+
+        netLog("[UDPInputClient] Started - isActive=\(isActive), connection=\(connection != nil)")
     }
 
-    private func setActive(_ value: Bool) {
-        isActive = value
+    private func handleState(_ state: NWConnection.State) {
+        switch state {
+        case .ready:
+            isActive = true
+            startReceiving()
+            netLog("[UDPInputClient] Connection ready to \(serverHost):\(serverPort)")
+        case .failed(let error):
+            isActive = false
+            netLog("[UDPInputClient] Connection failed: \(error)")
+        case .cancelled:
+            isActive = false
+        default:
+            break
+        }
     }
 
     private func startReceiving() {
         guard let conn = connection else { return }
         receiveLoop(on: conn)
-    }
-
-    /// Async wrapper for startReceiving (can be called from Task)
-    private func startReceivingAsync() {
-        startReceiving()
     }
 
     private nonisolated func receiveLoop(on connection: NWConnection) {

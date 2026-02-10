@@ -185,6 +185,9 @@ public class InputCaptureView: NSView {
         return videoRect
     }
 
+    /// Track first cursor position for logging
+    private var hasLoggedFirstCursorPosition = false
+
     /// Update cursor position from host (for local cursor rendering)
     public func updateCursorPosition(_ event: InputEvent) {
         guard event.type == .cursorPosition else { return }
@@ -198,6 +201,13 @@ public class InputCaptureView: NSView {
 
         let localX = videoRect.minX + CGFloat(event.x) * scaleX
         let localY = videoRect.minY + CGFloat(event.y) * scaleY
+
+        // Log first cursor position
+        if !hasLoggedFirstCursorPosition {
+            print("[InputCapture] First cursor position: remote=(\(event.x), \(event.y)), local=(\(localX), \(localY))")
+            print("[InputCapture] videoRect=\(videoRect), remoteScreen=\(remoteScreenWidth)x\(remoteScreenHeight)")
+            hasLoggedFirstCursorPosition = true
+        }
 
         // Update cursor layer position (disable implicit animations for smooth tracking)
         CATransaction.begin()
