@@ -164,6 +164,20 @@ public actor UDPReceiver: NetworkReceiver {
 
         connectionGroup = NWConnectionGroup(with: groupDescriptor, using: params)
 
+        // Use a class to track continuation state (must be reference type for capture)
+        final class ContinuationState: @unchecked Sendable {
+            var hasResumed = false
+            let lock = NSLock()
+            func tryResume() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if hasResumed { return false }
+                hasResumed = true
+                return true
+            }
+        }
+        let contState = ContinuationState()
+
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             connectionGroup?.stateUpdateHandler = { [weak self] state in
                 guard let self = self else { return }
@@ -171,10 +185,13 @@ public actor UDPReceiver: NetworkReceiver {
                 Task {
                     switch state {
                     case .ready:
+                        // Only resume once - stateUpdateHandler may be called multiple times
+                        guard contState.tryResume() else { return }
                         netLog("[UDPReceiver] Multicast receiver ready")
                         await self.setActive(true)
                         cont.resume()
                     case .failed(let error):
+                        guard contState.tryResume() else { return }
                         netLog("[UDPReceiver] Multicast receiver failed: \(error)")
                         await self.setActive(false)
                         cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
@@ -209,6 +226,20 @@ public actor UDPReceiver: NetworkReceiver {
 
         listener = try NWListener(using: params, on: nwPort)
 
+        // Use a class to track continuation state (must be reference type for capture)
+        final class ContinuationState: @unchecked Sendable {
+            var hasResumed = false
+            let lock = NSLock()
+            func tryResume() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if hasResumed { return false }
+                hasResumed = true
+                return true
+            }
+        }
+        let contState = ContinuationState()
+
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             listener?.stateUpdateHandler = { [weak self] state in
                 guard let self = self else { return }
@@ -216,10 +247,13 @@ public actor UDPReceiver: NetworkReceiver {
                 Task {
                     switch state {
                     case .ready:
+                        // Only resume once - stateUpdateHandler may be called multiple times
+                        guard contState.tryResume() else { return }
                         netLog("[UDPReceiver] Unicast listener ready on port \(self.port)")
                         await self.setActive(true)
                         cont.resume()
                     case .failed(let error):
+                        guard contState.tryResume() else { return }
                         netLog("[UDPReceiver] Unicast listener failed: \(error)")
                         await self.setActive(false)
                         cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
@@ -441,16 +475,33 @@ public actor UDPStreamServer: NetworkSender {
 
         listener = try NWListener(using: params, on: nwPort)
 
+        // Use a class to track continuation state (must be reference type for capture)
+        final class ContinuationState: @unchecked Sendable {
+            var hasResumed = false
+            let lock = NSLock()
+            func tryResume() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if hasResumed { return false }
+                hasResumed = true
+                return true
+            }
+        }
+        let contState = ContinuationState()
+
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             listener?.stateUpdateHandler = { [weak self] state in
                 guard let self = self else { return }
                 Task {
                     switch state {
                     case .ready:
+                        // Only resume once - stateUpdateHandler may be called multiple times
+                        guard contState.tryResume() else { return }
                         netLog("[UDPServer] Listening on port \(self.port)")
                         await self.setActive(true)
                         cont.resume()
                     case .failed(let error):
+                        guard contState.tryResume() else { return }
                         netLog("[UDPServer] Failed: \(error)")
                         await self.setActive(false)
                         cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
@@ -837,18 +888,35 @@ public actor UDPStreamClient: NetworkReceiver {
         params.allowLocalEndpointReuse = true
         connection = NWConnection(host: host, port: port, using: params)
 
+        // Use a class to track continuation state (must be reference type for capture)
+        final class ContinuationState: @unchecked Sendable {
+            var hasResumed = false
+            let lock = NSLock()
+            func tryResume() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if hasResumed { return false }
+                hasResumed = true
+                return true
+            }
+        }
+        let contState = ContinuationState()
+
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             connection?.stateUpdateHandler = { [weak self] state in
                 guard let self = self else { return }
                 Task {
                     switch state {
                     case .ready:
+                        // Only resume once - stateUpdateHandler may be called multiple times
+                        guard contState.tryResume() else { return }
                         netLog("[UDPClient] Connected to \(self.serverHost):\(self.serverPort)")
                         await self.setActive(true)
                         await self.startSubscribing()
                         await self.startReceiving()
                         cont.resume()
                     case .failed(let error):
+                        guard contState.tryResume() else { return }
                         netLog("[UDPClient] Connection failed: \(error)")
                         await self.setActive(false)
                         cont.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription))
@@ -1237,9 +1305,25 @@ public actor UDPInputServer {
 
         listener = try NWListener(using: params, on: nwPort)
 
+        // Use a class to track continuation state (must be reference type for capture)
+        final class ContinuationState: @unchecked Sendable {
+            var hasResumed = false
+            let lock = NSLock()
+            func tryResume() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if hasResumed { return false }
+                hasResumed = true
+                return true
+            }
+        }
+        let contState = ContinuationState()
+
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             listener?.stateUpdateHandler = { [weak self] state in
                 guard let self = self else { return }
+                // Only resume once - stateUpdateHandler may be called multiple times
+                guard contState.tryResume() else { return }
                 Task {
                     await self.handleListenerState(state, continuation: cont)
                 }

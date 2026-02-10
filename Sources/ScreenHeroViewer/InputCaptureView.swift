@@ -46,6 +46,11 @@ public class InputCaptureView: NSView {
     /// Current cursor type
     private var currentCursorType: InputEvent.CursorType = .arrow
 
+    /// Virtual mouse position in STREAM coordinates (0 to remoteScreenWidth/Height)
+    /// This is accumulated locally and sent as absolute position to host
+    private var virtualMouseX: CGFloat = 0
+    private var virtualMouseY: CGFloat = 0
+
     // MARK: - Initialization
 
     public init(frame: NSRect, videoView: MetalVideoDisplayView) {
@@ -196,17 +201,22 @@ public class InputCaptureView: NSView {
         let videoRect = calculateVideoRect()
 
         // Map remote coordinates to local view coordinates within the video rect
+        // Stream coords: Y=0 at TOP, increases DOWN
+        // AppKit view:   Y=0 at BOTTOM, increases UP
+        // Therefore: Y must be INVERTED
         let scaleX = videoRect.width / remoteScreenWidth
         let scaleY = videoRect.height / remoteScreenHeight
 
         let localX = videoRect.minX + CGFloat(event.x) * scaleX
-        let localY = videoRect.minY + CGFloat(event.y) * scaleY
+        let localY = videoRect.maxY - CGFloat(event.y) * scaleY  // INVERT Y
 
-        // Log first cursor position
-        if !hasLoggedFirstCursorPosition {
-            print("[InputCapture] First cursor position: remote=(\(event.x), \(event.y)), local=(\(localX), \(localY))")
-            print("[InputCapture] videoRect=\(videoRect), remoteScreen=\(remoteScreenWidth)x\(remoteScreenHeight)")
-            hasLoggedFirstCursorPosition = true
+        // Log cursor positions periodically
+        struct PositionLogger {
+            static var count = 0
+        }
+        PositionLogger.count += 1
+        if PositionLogger.count <= 5 || PositionLogger.count % 60 == 0 {
+            print("[Cursor] remote=(\(Int(event.x)), \(Int(event.y))) -> local=(\(Int(localX)), \(Int(localY))) | videoRect=\(Int(videoRect.minX)),\(Int(videoRect.minY))-\(Int(videoRect.maxX)),\(Int(videoRect.maxY)) | remoteScreen=\(Int(remoteScreenWidth))x\(Int(remoteScreenHeight)) | viewBounds=\(Int(bounds.width))x\(Int(bounds.height))")
         }
 
         // Update cursor layer position (disable implicit animations for smooth tracking)
@@ -240,10 +250,41 @@ public class InputCaptureView: NSView {
 
     // MARK: - Mouse Capture
 
-    private func captureMouse() {
+    /// Convert a point in view coordinates to stream coordinates
+    /// AppKit view: Y=0 at BOTTOM, increases UP
+    /// Stream/CG:   Y=0 at TOP, increases DOWN
+    /// Therefore: Y must be INVERTED
+    private func viewToStreamCoordinates(_ viewPoint: CGPoint) -> (x: CGFloat, y: CGFloat) {
+        let videoRect = calculateVideoRect()
+
+        // Clamp to video rect
+        let clampedX = max(videoRect.minX, min(videoRect.maxX, viewPoint.x))
+        let clampedY = max(videoRect.minY, min(videoRect.maxY, viewPoint.y))
+
+        // Convert to 0-1 range within video rect
+        let normalizedX = (clampedX - videoRect.minX) / videoRect.width
+        let normalizedY = (clampedY - videoRect.minY) / videoRect.height
+
+        // Convert to stream coordinates
+        // X is the same direction
+        // Y is INVERTED: view top (high Y) = stream top (low Y)
+        let streamX = normalizedX * remoteScreenWidth
+        let streamY = (1.0 - normalizedY) * remoteScreenHeight  // INVERT Y
+
+        return (streamX, streamY)
+    }
+
+    private func captureMouse(at viewPoint: CGPoint) {
         guard !isCaptured else { return }
 
         isCaptured = true
+
+        // Initialize virtual mouse position from click location
+        let streamCoords = viewToStreamCoordinates(viewPoint)
+        virtualMouseX = streamCoords.x
+        virtualMouseY = streamCoords.y
+
+        print("[InputCapture] Capture started at view=(\(Int(viewPoint.x)), \(Int(viewPoint.y))) -> stream=(\(Int(virtualMouseX)), \(Int(virtualMouseY)))")
 
         // DEBUG: Don't hide system cursor so we can compare positions
         // NSCursor.hide()
@@ -321,14 +362,21 @@ public class InputCaptureView: NSView {
     public override func mouseDown(with event: NSEvent) {
         print("[InputCapture] mouseDown: isCaptured=\(isCaptured), inputEnabled=\(inputEnabled), hasSender=\(inputSender != nil)")
 
+        // Get click position in view coordinates
+        let viewPoint = convert(event.locationInWindow, from: nil)
+
         // If not captured and input enabled, capture on click
         if !isCaptured && inputEnabled {
-            captureMouse()
+            captureMouse(at: viewPoint)
             window?.makeFirstResponder(self)
-            // After capture, send this first click to the host
-            let inputEvent = InputEvent.mouseDown(button: .left)
-            print("[InputCapture] SENDING initial mouseDown after capture")
+
+            // Send mouseMove to set initial position, then mouseDown
+            let inputEvent = InputEvent.mouseMove(deltaX: Float(virtualMouseX), deltaY: Float(virtualMouseY))
             inputSender?(inputEvent)
+
+            let clickEvent = InputEvent.mouseDown(button: .left)
+            print("[InputCapture] SENDING initial position and mouseDown after capture")
+            inputSender?(clickEvent)
             return
         }
 
@@ -378,52 +426,66 @@ public class InputCaptureView: NSView {
     public override func mouseMoved(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
 
-        // Use delta values for relative mouse movement
-        let deltaX = Float(event.deltaX)
-        let deltaY = Float(event.deltaY)
+        // Get raw deltas
+        let deltaX = CGFloat(event.deltaX)
+        let deltaY = CGFloat(event.deltaY)
 
-        // Only send and log if there's actual movement
+        // Only process if there's actual movement
         guard abs(deltaX) > 0.1 || abs(deltaY) > 0.1 else { return }
 
-        let inputEvent = InputEvent.mouseMove(deltaX: deltaX, deltaY: deltaY)
+        // Update virtual mouse position with deltas
+        // Note: deltaY is in AppKit coords (positive = up), but our stream coords have Y=0 at top
+        // So we ADD deltaY to move up (decrease stream Y) - wait no, let's think about this:
+        // - In stream coords, Y=0 is at TOP, Y increases DOWN
+        // - When user moves mouse UP, deltaY is POSITIVE (AppKit convention)
+        // - To move cursor UP in stream coords, we need to DECREASE Y
+        // - So: virtualMouseY -= deltaY
+        virtualMouseX += deltaX
+        virtualMouseY -= deltaY  // Invert Y for stream coordinates
+
+        // Clamp to valid range
+        virtualMouseX = max(0, min(remoteScreenWidth, virtualMouseX))
+        virtualMouseY = max(0, min(remoteScreenHeight, virtualMouseY))
+
+        // Send ABSOLUTE position (using the x,y fields of mouseMove)
+        let inputEvent = InputEvent.mouseMove(deltaX: Float(virtualMouseX), deltaY: Float(virtualMouseY))
 
         if let sender = inputSender {
-            print("[InputCapture] SENDING mouseMove: dx=\(deltaX), dy=\(deltaY)")
-            print("[InputCapture] About to call sender...")
+            // Log occasionally to avoid spam
+            struct MoveCounter { static var count = 0 }
+            MoveCounter.count += 1
+            if MoveCounter.count <= 3 || MoveCounter.count % 60 == 0 {
+                print("[InputCapture] SENDING absolute pos: (\(Int(virtualMouseX)), \(Int(virtualMouseY)))")
+            }
             sender(inputEvent)
-            print("[InputCapture] Sender returned")
-        } else {
-            print("[InputCapture] ERROR: inputSender is nil!")
         }
     }
 
     public override func mouseDragged(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
-
-        let deltaX = Float(event.deltaX)
-        let deltaY = Float(event.deltaY)
-
-        let inputEvent = InputEvent.mouseMove(deltaX: deltaX, deltaY: deltaY)
-        inputSender?(inputEvent)
+        updateAndSendAbsolutePosition(deltaX: CGFloat(event.deltaX), deltaY: CGFloat(event.deltaY))
     }
 
     public override func rightMouseDragged(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
-
-        let deltaX = Float(event.deltaX)
-        let deltaY = Float(event.deltaY)
-
-        let inputEvent = InputEvent.mouseMove(deltaX: deltaX, deltaY: deltaY)
-        inputSender?(inputEvent)
+        updateAndSendAbsolutePosition(deltaX: CGFloat(event.deltaX), deltaY: CGFloat(event.deltaY))
     }
 
     public override func otherMouseDragged(with event: NSEvent) {
         guard isCaptured && inputEnabled else { return }
+        updateAndSendAbsolutePosition(deltaX: CGFloat(event.deltaX), deltaY: CGFloat(event.deltaY))
+    }
 
-        let deltaX = Float(event.deltaX)
-        let deltaY = Float(event.deltaY)
+    /// Helper to update virtual position and send absolute coordinates
+    private func updateAndSendAbsolutePosition(deltaX: CGFloat, deltaY: CGFloat) {
+        virtualMouseX += deltaX
+        virtualMouseY -= deltaY  // Invert Y for stream coordinates
 
-        let inputEvent = InputEvent.mouseMove(deltaX: deltaX, deltaY: deltaY)
+        // Clamp to valid range
+        virtualMouseX = max(0, min(remoteScreenWidth, virtualMouseX))
+        virtualMouseY = max(0, min(remoteScreenHeight, virtualMouseY))
+
+        let inputEvent = InputEvent.mouseMove(deltaX: Float(virtualMouseX), deltaY: Float(virtualMouseY))
         inputSender?(inputEvent)
     }
 
